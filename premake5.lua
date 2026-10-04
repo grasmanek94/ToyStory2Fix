@@ -1,7 +1,7 @@
 workspace "ToyStory2Fix"
    configurations { "Release", "Debug" }
    platforms { "Win32" }
-   architecture "x32"
+   architecture "x86"
    location "build"
    objdir ("build/obj")
    buildlog ("build/log/%{prj.name}.log")
@@ -12,8 +12,8 @@ workspace "ToyStory2Fix"
    targetdir "data/scripts"
    targetextension ".asi"
    characterset ("MBCS")
-   flags { "StaticRuntime" }
-   
+   staticruntime "On"
+
    defines { "rsc_CompanyName=\"RibShark\"" }
    defines { "rsc_LegalCopyright=\"MIT License\""} 
    defines { "rsc_FileVersion=\"1.0.0.0\"", "rsc_ProductVersion=\"1.0.0.0\"" }
