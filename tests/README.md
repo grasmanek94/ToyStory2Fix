@@ -31,6 +31,11 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /MT tests/native_object_rendering.cpp /Fobui
 # Optional executable integration/replay check (use your local game path):
 ./build/tests/native_object_rendering.exe "C:/Games/Toy Story 2/toy2.exe"
 
+cl /nologo /std:c++17 /EHsc /W4 /WX /MT tests/native_scenery_rendering.cpp /Fobuild/tests/native_scenery_rendering.obj /Febuild/tests/native_scenery_rendering.exe
+./build/tests/native_scenery_rendering.exe
+# Optional native world/grid replay in a private executable copy:
+./build/tests/native_scenery_rendering.exe "C:/Games/Toy Story 2/toy2.exe"
+
 cl /nologo /std:c++17 /EHsc /W4 /WX /MT tests/scene_render_distance.cpp /Fobuild/tests/scene_render_distance.obj /Febuild/tests/scene_render_distance.exe
 ./build/tests/scene_render_distance.exe
 
@@ -69,12 +74,15 @@ See [the recovered rendering paths and capacity notes](object_rendering_notes.md
 
 `scene_render_distance` replays the recovered native distance setter for 512 calls, with a live caller x87 value, and verifies stack depth, exception flags, the overridden geometry threshold and the original second threshold. Build all native replay tests as **x86**.
 
+`native_scenery_rendering` tests the scoped detailed/distant split, native far-clip cap, overlap/no-shrink behavior, bounded grids, prerequisite rejection, atomic signatures and restoration after recursion/exceptions. Optional executable replay runs the actual native world/grid routines with synthetic instances and mocked rendering consumers: distant corner-cell visibility, hidden/frustum/range rejection, unchanged portal traversal and special flags, and x87 preservation across 512 calls. See [the scenery audit](scenery_rendering_notes.md); pixel-level grass/fog and emitter behavior still require gameplay checks.
+
 In-game checks are still required:
 
 1. Compare the same camera positions with `IncreaseObjectRenderDistance = false` and `true`, restarting between changes. Check bedroom coins/lamp/doorway objects, a large outdoor level, enemies and pickups. Confirm the log reports installation rather than a safe skip.
 2. Sweep between rooms/portals and rotate the camera; no extra objects should draw through native hidden rooms. Verify Buzz, animation, death/respawn and level transitions.
 3. Verify coin collection, pickup prompts, target lock, keyboard/controller movement, left-click fire, right-click visor, mouse orbit and timing are unchanged. Distant unloaded actors are intentionally not activated.
 4. Include menus, loading, cutscenes/FMV, pause, Alt-Tab and shutdown. Keep the established desktop-before-launch setup for high-resolution modes; automatic fullscreen-clipping work remains paused.
+5. Compare `IncreaseSceneryRenderDistance = false` and `true` in Andy's neighbourhood while retaining the object option: grass/alpha meshes, reported fog/effects, the former detailed/distant split and room/portal hiding. Atmospheric fog and absent particle emitters intentionally remain native.
 
 ## Alt-Tab recovery
 

@@ -41,6 +41,7 @@ All settings belong to the `[ToyStory2Fix]` section in `scripts\ToyStory2Fix.ini
 | `IncreaseEnemyRenderDistance` | `true` | Extend enemy draw distance separately from level geometry. |
 | `IncreaseObjectRenderDistance` | `true` | Extend coin/pickup and loaded actor rendering, with enlarged renderer-only pools. |
 | `ObjectDrawDistance` | `65536` | Finite object-rendering radius in renderer world units; range `1024`–`65536`. |
+| `IncreaseSceneryRenderDistance` | `true` | Extend detailed scenery/grass within the native far clip; requires the extended object pools. |
 | `Widescreen` | `true` | Correct the 3D aspect ratio for widescreen resolutions. |
 | `TextureFix` | `true` | Fix texture-mapping bugs. |
 | `DiskFix` | `true` | Fix the broken disk launcher at 60 FPS. |
@@ -116,9 +117,17 @@ This is **not unlimited actor activation**: the native 64-slot gameplay actor po
 
 Set `IncreaseObjectRenderDistance = false` to compare with the original object distances and renderer capacities on the next launch. The geometry-distance patch also now preserves the native x87 stack pop instead of leaking one floating-point value per distance-setter call.
 
+### Detailed scenery distance (experimental)
+
+`IncreaseSceneryRenderDistance = true` extends the separate detailed/distant scenery split toward `ObjectDrawDistance`, capped by the existing projection far clip (normally **48000 units**). The original detailed pass stops at 12000 units at the highest detail setting, even with the geometry-distance option enabled. Both sides of the split move together, preserving the native overlap instead of drawing old distant versions throughout the newly extended detailed range. The bounded spatial-grid search is extended as well; native room/portal traversal, hidden flags, frustum checks and material alpha remain intact.
+
+This requires `IncreaseObjectRenderDistance = true` and successful installation of its expanded renderer pools. The override exists only during world-scenery rendering; the original ranges are restored afterward. It does not change the projection/depth precision, atmospheric fog, particle spawning/lifetimes, AI, collision or the shared fade table. Fog/special effects that are absent because their emitters are not active are **not** activated by this patch. Grass and the reported disappearing effects in Andy's neighbourhood still need in-game comparison; see [the scenery audit](tests/scenery_rendering_notes.md).
+
+Set only `IncreaseSceneryRenderDistance = false` and restart to compare scenery while retaining the working extended coins/objects.
+
 ### Log file
 
-`ToyStory2Fix.log` is written alongside the `.asi`/`.ini`. It records display dimensions and initialization results, native resolution-patch status, fullscreen window/client and monitor dimensions, current OS/DirectDraw modes, DPI awareness, native surface dimensions/lost status, Alt-Tab recovery results, mouse-feature activation or signature failures, mouse-look sensitivity/inversion, parsed render-distance values, object-pool installation status and increases in the number of additional rendered actors. Check it to confirm that the intended options are being applied.
+`ToyStory2Fix.log` is written alongside the `.asi`/`.ini`. It records display dimensions and initialization results, native resolution-patch status, fullscreen window/client and monitor dimensions, current OS/DirectDraw modes, DPI awareness, native surface dimensions/lost status, Alt-Tab recovery results, mouse-feature activation or signature failures, mouse-look sensitivity/inversion, parsed render-distance values, object-pool/scenery installation status and increases in the number of additional rendered actors. Check it to confirm that the intended options are being applied.
 
 ## Building and testing
 

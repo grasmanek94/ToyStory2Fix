@@ -1,6 +1,6 @@
 # Follow-up fixes
 
-- **Grass and fog/special-effect draw distances:** User confirmed the extended coin/object draw-distance fix works well, but grass and special effects such as fog still disappear at the original short ranges. Investigate their separate culling, fade and allocation paths in a future task. Do not raise shared fade-table or gameplay activation limits without auditing/expanding their capacity.
+- **Grass and fog/special-effect gameplay verification:** Added a guarded detailed-scenery split/grid extension using the expanded renderer pools. Native world/grid replay passes, but Andy's neighbourhood grass and the reported disappearing fog/effects still need a same-position in-game comparison. If an effect remains missing, identify its emitter before extending spawning or allocating additional simulation slots. Atmospheric fog, particle spawning/lifetimes and the shared fade table are deliberately unchanged. See `tests/scenery_rendering_notes.md`; do not mark this task complete on automated tests alone.
 
 ## Completed
 

@@ -4,6 +4,7 @@
 #include "NativeD3DResolution.h"
 #include "HighResolutionWindow.h"
 #include "NativeObjectRendering.h"
+#include "NativeSceneryRendering.h"
 #include "SceneRenderDistance.h"
 #include "AltTabRecovery.h"
 #include <MMSystem.h>
@@ -1023,6 +1024,16 @@ DWORD WINAPI Init(LPVOID bDelay)
         else
             LogMessage(format("IncreaseObjectRenderDistance: skipped safely (%s); object distances/pools left unchanged",
                 NativeObjectRendering::StatusName(status)));
+    }
+
+    if (iniReader.ReadBoolean(INI_KEY, "IncreaseSceneryRenderDistance", true))
+    {
+        const auto status = NativeSceneryRendering::Install(GetModuleHandleW(nullptr));
+        if (status == NativeSceneryRendering::Status::Applied)
+            LogMessage(format("IncreaseSceneryRenderDistance: detailed scenery split extended toward %g within the native far clip; bounded spatial grid; particle spawning/fade table unchanged",
+                NativeObjectRendering::drawDistance));
+        else
+            LogMessage(format("IncreaseSceneryRenderDistance: skipped safely (%s)", NativeSceneryRendering::StatusName(status)));
     }
 
     if (iniReader.ReadBoolean(INI_KEY, "MouseButtons", true))
