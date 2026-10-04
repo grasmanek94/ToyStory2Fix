@@ -3,6 +3,8 @@
 #include "MouseButtonActions.h"
 #include "NativeD3DResolution.h"
 #include "HighResolutionWindow.h"
+#include "NativeObjectRendering.h"
+#include "SceneRenderDistance.h"
 #include <MMSystem.h>
 #include <ddraw.h>
 #include <algorithm>
@@ -18,8 +20,71 @@ uintptr_t sub_UpdateCameraController_addr;
 uintptr_t sub_InitializeDisplay_addr;
 uint8_t** g_ppNativeDisplayContext = nullptr;
 bool g_widescreenProjectionHookInstalled = false;
+ObjectDrawDistance::RenderOverlay g_objectRenderOverlay;
+size_t g_largestExtraActorCount = 0;
 
 void LogMessage(const std::string& message);
+
+bool IsLoadedActorVisibleForRendering(const ObjectDrawDistance::Actor& actor)
+{
+    // Ghidra: world +0x274 is the model-pointer table, +0x278 its allocated length.
+    const auto world = *reinterpret_cast<const uint8_t**>(0x00B62410);
+    if (world == nullptr)
+        return false;
+    const auto count = *reinterpret_cast<const uint32_t*>(world + 0x278);
+    const auto models = *reinterpret_cast<const uint8_t* const* const*>(world + 0x274);
+    // Native model metadata has 128 pointers; its first short gates visibility.
+    // A loaded mesh alone does not mean that an actor should be rendered.
+    const auto metadata = reinterpret_cast<const uint8_t* const*>(0x00547CD4);
+    if (!ObjectDrawDistance::HasRenderableModel(actor, models, count, metadata))
+        return false;
+    const auto room = actor.Read<int8_t>(0x6C);
+    const auto roomVisible = reinterpret_cast<int(__cdecl*)(uint32_t)>(0x004BC160);
+    if (room < 0 || roomVisible(static_cast<uint32_t>(room)) == 0)
+        return false; // Keep native room/portal visibility, not "draw through walls".
+    const float position[] = {
+        static_cast<float>(actor.Read<int32_t>(0)) / 32.0f,
+        static_cast<float>(actor.Read<int32_t>(4)) / 32.0f,
+        static_cast<float>(actor.Read<int32_t>(8)) / 32.0f
+    };
+    const auto sphereVisibility = reinterpret_cast<uint32_t(__cdecl*)(const float*, float)>(0x004BA1F0);
+    return (sphereVisibility(position, static_cast<float>(actor.Read<int16_t>(0x3E))) & 0x55555555) == 0;
+}
+
+void __cdecl RenderGameplayWithExtendedObjectDistance(int renderObjects)
+{
+    const auto render = reinterpret_cast<void(__cdecl*)(int)>(0x00440F70);
+    if (renderObjects == 0 || NativeObjectRendering::arenaMemory == nullptr || g_objectRenderOverlay.active)
+    {
+        render(renderObjects);
+        return;
+    }
+    auto& list = NativeObjectRendering::RenderList();
+    // Arm cleanup before Begin/logging: even an allocation/formatting exception
+    // must not let render-only visibility escape into gameplay updates.
+    struct RestoreOverlay
+    {
+        ~RestoreOverlay() { g_objectRenderOverlay.End(NativeObjectRendering::RenderList()); }
+    } restore;
+    const auto before = std::find(list.begin(), list.end(), nullptr) - list.begin();
+    const bool overlay = g_objectRenderOverlay.Begin(list,
+        reinterpret_cast<ObjectDrawDistance::Actor*>(0x0052C840),
+        reinterpret_cast<ObjectDrawDistance::Actor*>(0x0052F300),
+        reinterpret_cast<const int32_t*>(0x0052ADC0), NativeObjectRendering::drawDistance,
+        IsLoadedActorVisibleForRendering);
+    if (overlay)
+    {
+        const auto after = std::find(list.begin(), list.end(), nullptr) - list.begin();
+        const auto extra = static_cast<size_t>(after - before);
+        if (extra > g_largestExtraActorCount)
+        {
+            g_largestExtraActorCount = extra;
+            LogMessage(format("IncreaseObjectRenderDistance: rendering %u additional loaded actors; native gameplay list unchanged",
+                static_cast<unsigned>(extra)));
+        }
+    }
+    render(renderObjects);
+}
 
 struct MouseLookSettings
 {
@@ -813,6 +878,20 @@ DWORD WINAPI Init(LPVOID bDelay)
             LogMessage("FixHighResolution: enabled (experimental native limit fix and safe startup failure handling)");
     }
 
+    if (iniReader.ReadBoolean(INI_KEY, "IncreaseObjectRenderDistance", true))
+    {
+        const float distance = ObjectDrawDistance::SanitizeDistance(
+            iniReader.ReadFloat(INI_KEY, "ObjectDrawDistance", 65536.0f));
+        const auto status = NativeObjectRendering::Install(GetModuleHandleW(nullptr),
+            static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&RenderGameplayWithExtendedObjectDistance)), distance);
+        if (status == NativeObjectRendering::Status::Applied)
+            LogMessage(format("IncreaseObjectRenderDistance: finite distance=%g; sprite queue=16384, transforms=8192, render entries/triangles=32768; gameplay actor pool remains 64",
+                distance));
+        else
+            LogMessage(format("IncreaseObjectRenderDistance: skipped safely (%s); object distances/pools left unchanged",
+                NativeObjectRendering::StatusName(status)));
+    }
+
     if (iniReader.ReadBoolean(INI_KEY, "MouseButtons", true))
     {
         g_mouseButtons.enabled = InstallMouseButtonHook();
@@ -907,11 +986,18 @@ DWORD WINAPI Init(LPVOID bDelay)
 
         LogMessage(format("IncreaseRenderDistance: ini value \"%s\" parsed to %g", rawValue.c_str(), renderDistanceValue));
 
-        pattern = hook::pattern("D9 44 24 04 D8 4C 24 04 D9 1D"); //4BC410
-
-        float** flt_5088B0_addr = (float**)pattern.get_first(10);
-        **flt_5088B0_addr = renderDistanceValue;    // sqrtf(FLT_MAX)=1.84467e+19 | INFINITY=inf | 1.45e8f is the more similar to game's default value.
-        injector::MakeNOP(pattern.get_first(8), 6);
+        pattern = hook::pattern("D9 44 24 04 D8 4C 24 04 D9 1D ? ? ? ? D9 44 24 08 D8 4C 24 08 D9 1D ? ? ? ? C3"); //4BC410
+        if (pattern.size() == 1)
+        {
+            const auto threshold = *pattern.get_first<float*>(10);
+            *threshold = renderDistanceValue;
+            auto store = SceneRenderDistance::PreserveThresholdStore;
+            injector::WriteMemoryRaw(pattern.get_first(8), store.data(), store.size(), true);
+        }
+        else
+        {
+            LogMessage("IncreaseRenderDistance: skipped safely (distance setter signature does not match uniquely)");
+        }
     }
 
     /* Fix widescreen once game loop begins */
