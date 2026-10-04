@@ -5,6 +5,7 @@
 #include "HighResolutionWindow.h"
 #include "NativeObjectRendering.h"
 #include "SceneRenderDistance.h"
+#include "AltTabRecovery.h"
 #include <MMSystem.h>
 #include <ddraw.h>
 #include <algorithm>
@@ -20,6 +21,15 @@ uintptr_t sub_UpdateCameraController_addr;
 uintptr_t sub_InitializeDisplay_addr;
 uint8_t** g_ppNativeDisplayContext = nullptr;
 bool g_widescreenProjectionHookInstalled = false;
+uintptr_t g_beginNativeSceneAddress = 0;
+uintptr_t g_presentNativeDisplayAddress = 0;
+uintptr_t g_initializeNativeDrawAddress = 0;
+uint8_t** g_ppAltTabDisplayContext = nullptr;
+AltTabRecovery::CooperativeSettings g_altTabCooperativeSettings;
+AltTabRecovery::Bindings g_altTabBindings;
+AltTabRecovery::State g_altTabRecovery;
+HRESULT g_lastAltTabRecoveryError = DD_OK;
+AltTabRecovery::Stage g_lastAltTabRecoveryStage = AltTabRecovery::Stage::None;
 ObjectDrawDistance::RenderOverlay g_objectRenderOverlay;
 size_t g_largestExtraActorCount = 0;
 
@@ -711,6 +721,126 @@ bool InstallHighResolutionHook()
     return true;
 }
 
+int __fastcall InitializeNativeDrawWithAltTabSettings(uint8_t* context, void*, const GUID* driver, uint32_t flags)
+{
+    const auto initialize = reinterpret_cast<int(__thiscall*)(uint8_t*, const GUID*, uint32_t)>(g_initializeNativeDrawAddress);
+    const auto result = initialize(context, driver, flags);
+    g_altTabCooperativeSettings = {};
+    if (result >= 0 && context != nullptr)
+    {
+        g_altTabCooperativeSettings = { AltTabRecovery::Read<IDirectDraw4*>(context, 0x48),
+            AltTabRecovery::Read<HWND>(context, 0),
+            AltTabRecovery::NativeCooperativeFlags(AltTabRecovery::Read<uint32_t>(context, 4) != 0, flags) };
+        LogMessage(format("FixAltTab: captured initial cooperative flags=0x%X", g_altTabCooperativeSettings.flags));
+    }
+    return result;
+}
+
+HRESULT __cdecl BeginSceneWithAltTabRecovery()
+{
+    const auto begin = reinterpret_cast<HRESULT(__cdecl*)()>(g_beginNativeSceneAddress);
+    // Native Direct3D6 only. Do not replace a graphics wrapper's own recovery policy.
+    const auto nativeD3D = GetModuleHandleA("d3dim.dll");
+    if (nativeD3D == nullptr || g_ppAltTabDisplayContext == nullptr)
+    {
+        g_altTabRecovery.ObserveContext(nullptr);
+        return begin();
+    }
+    const auto context = *g_ppAltTabDisplayContext;
+    if (!AltTabRecovery::UsesNativeModules(context, nativeD3D, GetModuleHandleA("ddraw.dll")))
+    {
+        g_altTabRecovery.ObserveContext(nullptr);
+        return begin();
+    }
+    const auto window = AltTabRecovery::Read<HWND>(context, 0);
+    const bool focused = window != nullptr && GetForegroundWindow() == window && !IsIconic(window);
+    const auto result = g_altTabRecovery.Begin(context, g_altTabBindings, focused, begin);
+    const auto& recovery = g_altTabRecovery.lastResult;
+    if (recovery.attempted && (SUCCEEDED(recovery.error) || recovery.error != g_lastAltTabRecoveryError ||
+        recovery.stage != g_lastAltTabRecoveryStage))
+    {
+        LogMessage(format("FixAltTab: recovery result=0x%08X stage=%s, exclusive reacquired=%u, restored surfaces=%u, reloaded textures=%u, mode restored=%u, BeginScene=0x%08X",
+            static_cast<uint32_t>(recovery.error), AltTabRecovery::StageName(recovery.stage),
+            recovery.exclusiveReacquired ? 1u : 0u,
+            recovery.surfaces, recovery.textures, recovery.modeRestored ? 1u : 0u, static_cast<uint32_t>(result)));
+        g_lastAltTabRecoveryError = recovery.error;
+        g_lastAltTabRecoveryStage = recovery.stage;
+    }
+    return result;
+}
+
+HRESULT __cdecl PresentWithAltTabRecovery()
+{
+    const auto present = reinterpret_cast<HRESULT(__cdecl*)()>(g_presentNativeDisplayAddress);
+    const auto result = present();
+    if (g_altTabRecovery.context != nullptr)
+        g_altTabRecovery.ObservePresent(result);
+    return result; // Preserve the native presentation result and existing fallback.
+}
+
+bool InstallAltTabRecoveryHooks(HMODULE module = GetModuleHandleW(nullptr))
+{
+    if (module == nullptr)
+        return false;
+    auto frame = hook::module_pattern(module, "E8 ? ? ? ? 85 C0 75 ? E8 ? ? ? ? E8 ? ? ? ? E8 ? ? ? ? A1 ? ? ? ? 85 C0 74 ? E8 ? ? ? ? B8 01 00 00 00 C3 33 C0 C3");
+    auto begin = hook::module_pattern(module, "E8 ? ? ? ? 85 C0 74 ? 8B 08 50 FF 51 24 C3 83 C8 FF C3");
+    auto present = hook::module_pattern(module, "E8 ? ? ? ? 3D C2 01 76 88 75 05 E9 ? ? ? ? C3");
+    auto back = hook::module_pattern(module, "A1 ? ? ? ? 8B 40 34 C3");
+    auto device = hook::module_pattern(module, "A1 ? ? ? ? 8B 40 40 C3");
+    auto textures = hook::module_pattern(module, "A1 ? ? ? ? 85 C0 74 ? C7 80 04 01 00 00 00 00 00 00 A1 ? ? ? ? 50 E8 ? ? ? ? A1 ? ? ? ? 83 C4 04 85 C0 75 ? C3");
+    auto recreate = hook::module_pattern(module, "81 EC 8C 02 00 00 53 8B 9C 24 94 02 00 00 55 56 8A 83 00 01 00 00 57 A8 40 0F 85");
+    auto textureBinding = hook::module_pattern(module, "A1 ? ? ? ? 56 57 8B 7C 24 0C 3B C7 C7 05 ? ? ? ? 00 00 00 00 74 ? 6A 00 57 89 3D ? ? ? ? E8 ? ? ? ?");
+    auto initializeDraw = hook::module_pattern(module, "8B 44 24 04 53 8B 5C 24 14 56 57 53 8B F1 50 E8 ? ? ? ? 85 C0 0F 8C");
+    auto cooperativeFlags = hook::module_pattern(module, "8B 46 04 B9 08 00 00 00 85 C0 74 05 B9 13 00 00 00 8B 44 24 10 83 E0 10 84 C0 75 03 80 CD 08 8B 07 51 8B 0E 8B 10 51 50 FF 52 50 33 D2 5F 85 C0 0F 9D C2 4A 5E 81 E2 02 00 00 82 8B C2 C2 08 00");
+    const auto unique = [](hook::pattern& pattern, const char* name)
+    {
+        const auto matches = pattern.size();
+        if (matches == 1)
+            return true;
+        LogMessage(format("FixAltTab: skipped safely (%s pattern matches=%u)", name, static_cast<unsigned>(matches)));
+        return false;
+    };
+    if (!unique(frame, "frame") || !unique(begin, "BeginScene") || !unique(present, "presentation") ||
+        !unique(back, "back buffer") || !unique(device, "device") || !unique(textures, "texture list") ||
+        !unique(recreate, "texture uploader") || !unique(textureBinding, "texture binding") ||
+        !unique(initializeDraw, "DirectDraw initialization") || !unique(cooperativeFlags, "cooperative flags"))
+    {
+        return false;
+    }
+    const auto frameCall = frame.get_first<uint8_t>();
+    const auto originalBegin = reinterpret_cast<uintptr_t>(frameCall) + 5 + *reinterpret_cast<int32_t*>(frameCall + 1);
+    const auto beginCall = begin.get_first<uint8_t>();
+    const auto originalGetDevice = reinterpret_cast<uintptr_t>(beginCall) + 5 + *reinterpret_cast<int32_t*>(beginCall + 1);
+    const auto displayCell = *back.get_first<uint8_t**>(1);
+    const auto textureCell = *textures.get_first<uint8_t**>(1);
+    const auto cachedTexture = *textureBinding.get_first<int32_t*>(1);
+    const auto initializeDrawCall = initializeDraw.get_first<uint8_t>(15);
+    const auto originalInitializeDraw = reinterpret_cast<uintptr_t>(initializeDrawCall) + 5 +
+        *reinterpret_cast<int32_t*>(initializeDrawCall + 1);
+    // Cross-check repeated references before installing either hook.
+    if (originalBegin != reinterpret_cast<uintptr_t>(beginCall) ||
+        originalGetDevice != reinterpret_cast<uintptr_t>(device.get_first()) ||
+        displayCell != *device.get_first<uint8_t**>(1) ||
+        textureCell != *textures.get_first<uint8_t**>(20) || textureCell != *textures.get_first<uint8_t**>(31) ||
+        cachedTexture != *textureBinding.get_first<int32_t*>(30) ||
+        originalInitializeDraw + 0x53 != reinterpret_cast<uintptr_t>(cooperativeFlags.get_first()))
+    {
+        LogMessage("FixAltTab: skipped safely (native references disagree)");
+        return false;
+    }
+    const auto presentCall = present.get_first<uint8_t>();
+    g_beginNativeSceneAddress = originalBegin;
+    g_presentNativeDisplayAddress = reinterpret_cast<uintptr_t>(presentCall) + 5 + *reinterpret_cast<int32_t*>(presentCall + 1);
+    g_ppAltTabDisplayContext = displayCell;
+    g_initializeNativeDrawAddress = originalInitializeDraw;
+    g_altTabBindings = { textureCell, reinterpret_cast<int(__cdecl*)(uint8_t*)>(recreate.get_first()), cachedTexture,
+        &g_altTabCooperativeSettings };
+    injector::MakeCALL(initializeDrawCall, InitializeNativeDrawWithAltTabSettings);
+    injector::MakeCALL(frameCall, BeginSceneWithAltTabRecovery);
+    injector::MakeCALL(presentCall, PresentWithAltTabRecovery);
+    return true;
+}
+
 bool InstallMouseButtonHook()
 {
     // Ghidra: UpdateRawInputActions copies previous input, polls DirectInput, then stores CX.
@@ -877,6 +1007,9 @@ DWORD WINAPI Init(LPVOID bDelay)
         if (InstallHighResolutionHook())
             LogMessage("FixHighResolution: enabled (experimental native limit fix and safe startup failure handling)");
     }
+
+    if (iniReader.ReadBoolean(INI_KEY, "FixAltTab", true) && InstallAltTabRecoveryHooks())
+        LogMessage("FixAltTab: enabled (focused exclusive ownership and surface/texture recovery; native Direct3D6 only)");
 
     if (iniReader.ReadBoolean(INI_KEY, "IncreaseObjectRenderDistance", true))
     {
