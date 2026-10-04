@@ -4,13 +4,14 @@
 #include <cstdint>
 #include <cstring>
 #include "Hooking.Patterns.h"
+#include "HighResolutionLimits.h"
 
 namespace NativeD3DResolution
 {
-    // Conservative experimental ceiling: full 3840x2160 and portrait equivalents.
+    // Experimental ceiling: full 7680x4320 and portrait equivalents.
     // GPU/surface capabilities still apply; this is not an unlimited-resolution patch.
-    constexpr uint32_t OriginalLimit = 2048;
-    constexpr uint32_t RaisedLimit = 4096;
+    constexpr uint32_t OriginalLimit = HighResolutionLimits::OriginalLimit;
+    constexpr uint32_t RaisedLimit = HighResolutionLimits::RaisedLimit;
 
     // SDK IID_IDirect3DHALDevice; do not raise the software rasterizer's limits.
     constexpr GUID HalDeviceGuid = { 0x84E63DE0, 0x46AA, 0x11CF,

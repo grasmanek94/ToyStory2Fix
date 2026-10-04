@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <cstdint>
+#include "HighResolutionLimits.h"
 
 namespace HighResolutionWindow
 {
@@ -42,7 +43,8 @@ namespace HighResolutionWindow
 
     inline bool Attach(HWND window, uint32_t width, uint32_t height)
     {
-        if (window == nullptr || width == 0 || height == 0 || width > 4096 || height > 4096)
+        if (window == nullptr || width == 0 || height == 0 ||
+            width > HighResolutionLimits::RaisedLimit || height > HighResolutionLimits::RaisedLimit)
             return false;
 
         DWORD processId = 0;

@@ -63,7 +63,8 @@ int main()
 
     assert(!HighResolutionWindow::Attach(nullptr, 2560, 1440));
     assert(!HighResolutionWindow::Attach(window, 0, 1440));
-    assert(!HighResolutionWindow::Attach(window, 4097, 1440));
+    assert(!HighResolutionWindow::Attach(window, HighResolutionLimits::RaisedLimit + 1, 1440));
+    assert(!HighResolutionWindow::Attach(window, 2560, HighResolutionLimits::RaisedLimit + 1));
     assert(!HighResolutionWindow::Resize());
     assert(HighResolutionWindow::Attach(window, 2560, 1440));
     const auto original = HighResolutionWindow::state.originalProcedure;
@@ -74,7 +75,9 @@ int main()
     assert(SendMessageA(window, WM_APP, 123, 456) == 579 && otherCalls == 1);
 
     // Reattaching must update dimensions without recursively subclassing the window.
-    const uint32_t sizes[][2] = {{1920,2160}, {3840,2160}, {2160,3840}, {4096,2160}};
+    const uint32_t sizes[][2] = {{1920,2160}, {3840,2160}, {2160,3840}, {4096,2160},
+        {5120,2880}, {2880,5120}, {7680,4320}, {4320,7680},
+        {HighResolutionLimits::RaisedLimit,2160}, {2160,HighResolutionLimits::RaisedLimit}};
     for (const auto& size : sizes)
     {
         assert(HighResolutionWindow::Attach(window, size[0], size[1]));

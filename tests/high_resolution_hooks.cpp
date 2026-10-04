@@ -15,6 +15,34 @@ namespace
     const GUID* expectedDevice = nullptr;
     const DDSURFACEDESC2* expectedMode = nullptr;
     uint32_t expectedFlags = 0;
+    unsigned descriptorQueries = 0;
+    unsigned lostQueries = 0;
+    HRESULT descriptorResult = DD_OK;
+    HRESULT lostResult = DD_OK;
+    HRESULT STDMETHODCALLTYPE TestSurfaceDescriptor(void*, DDSURFACEDESC2* desc)
+    {
+        assert(desc != nullptr && desc->dwSize == sizeof(*desc));
+        ++descriptorQueries;
+        if (SUCCEEDED(descriptorResult))
+        {
+            desc->dwWidth = 5120;
+            desc->dwHeight = 2880;
+            desc->lPitch = 5120 * 4;
+        }
+        return descriptorResult;
+    }
+
+    HRESULT STDMETHODCALLTYPE TestSurfaceLost(void*)
+    {
+        ++lostQueries;
+        return lostResult;
+    }
+
+    HRESULT STDMETHODCALLTYPE TestSurfaceClipper(void*, IDirectDrawClipper** clipper)
+    {
+        *clipper = nullptr;
+        return DDERR_NOCLIPPERATTACHED;
+    }
 
     HMODULE TestGetModuleHandleA(const char* name)
     {
@@ -89,6 +117,32 @@ int main()
     assert(!NativeD3DResolution::IsHalDevice(nullptr));
     assert(NativeD3DResolution::RaiseLimit(nullptr).status == NativeD3DResolution::Status::ModuleMissing);
 
+    // Match the SDK's COM vtable slots without creating any real graphics surfaces.
+    // Diagnostic queries must not write to the game's recovered display context.
+    std::array<void*, 25> surfaceMethods{};
+    surfaceMethods[15] = reinterpret_cast<void*>(&TestSurfaceClipper);
+    surfaceMethods[22] = reinterpret_cast<void*>(&TestSurfaceDescriptor);
+    surfaceMethods[24] = reinterpret_cast<void*>(&TestSurfaceLost);
+    struct FakeSurface { void** methods; } fakeSurface{ surfaceMethods.data() };
+    alignas(4) std::array<uint8_t, 0x50> displayContext{};
+    auto surface = reinterpret_cast<IDirectDrawSurface4*>(&fakeSurface);
+    for (const size_t offset : { 0x30u, 0x34u, 0x38u, 0x3Cu })
+        std::memcpy(displayContext.data() + offset, &surface, sizeof(surface));
+    const auto savedContext = displayContext;
+    auto contextPointer = displayContext.data();
+    g_ppNativeDisplayContext = &contextPointer;
+    LogNativeDisplaySurfaces();
+    assert(descriptorQueries == 4 && lostQueries == 4 && displayContext == savedContext);
+    descriptorResult = DDERR_GENERIC;
+    lostResult = DDERR_SURFACELOST;
+    LogNativeDisplaySurfaces();
+    assert(descriptorQueries == 8 && lostQueries == 8 && displayContext == savedContext);
+    contextPointer = nullptr;
+    LogNativeDisplaySurfaces();
+    g_ppNativeDisplayContext = nullptr;
+    LogNativeDisplaySurfaces();
+    assert(descriptorQueries == 8 && lostQueries == 8);
+
     sub_InitializeDisplay_addr = reinterpret_cast<uintptr_t>(&TestInitialize);
     DDSURFACEDESC2 mode{};
     mode.dwSize = sizeof(mode);
@@ -123,6 +177,7 @@ int main()
     assert(exited && backendCalls == 3 && messages == 1);
     assert(lastMessage.find("2560x1440") != std::string::npos);
     assert(lastMessage.find("82000004") != std::string::npos);
-    assert(lastMessage.find("4096") != std::string::npos);
-    std::puts("Resolution dimensions, projection memory/register isolation and safe startup failure tests passed.");
+    assert(lastMessage.find(std::to_string(NativeD3DResolution::RaisedLimit)) != std::string::npos);
+
+    std::puts("Resolution dimensions, projection isolation, read-only surface diagnostics and safe startup failure tests passed.");
 }

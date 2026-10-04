@@ -145,7 +145,9 @@ int main()
     hr = dd4->SetCooperativeLevel(window, DDSCL_NORMAL);
     unsigned failures = (window == nullptr || FAILED(hr)) ? 1 : 0;
     const DWORD sizes[][2] = {{640,480}, {1920,1080}, {1920,1440}, {2048,1440}, {2049,1440},
-        {1920,2048}, {1920,2049}, {2560,1440}, {1920,2160}, {3840,2160}, {4096,2160}};
+        {1920,2048}, {1920,2049}, {2560,1440}, {1920,2160}, {3840,2160}, {4096,2160},
+        {5120,2880}, {2880,5120}, {7680,4320}, {4320,7680},
+        {NativeD3DResolution::RaisedLimit,2160}, {2160,NativeD3DResolution::RaisedLimit}};
     if (failures == 0)
     {
         for (const auto& size : sizes)
@@ -159,8 +161,8 @@ int main()
         {
             for (const auto& size : sizes)
                 failures += !CheckSize(dd4, d3d, size[0], size[1], true, true);
-            failures += !CheckSize(dd4, d3d, 4097, 480, true, false);
-            failures += !CheckSize(dd4, d3d, 640, 4097, true, false);
+            failures += !CheckSize(dd4, d3d, NativeD3DResolution::RaisedLimit + 1, 480, true, false);
+            failures += !CheckSize(dd4, d3d, 640, NativeD3DResolution::RaisedLimit + 1, true, false);
             failures += NativeD3DResolution::RaiseLimit(native).status != NativeD3DResolution::Status::AlreadyApplied;
         }
     }

@@ -10,11 +10,13 @@
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
+#include <vector>
 
 uintptr_t sub_490860_addr;
 uintptr_t sub_49D910_addr;
 uintptr_t sub_UpdateCameraController_addr;
 uintptr_t sub_InitializeDisplay_addr;
+uint8_t** g_ppNativeDisplayContext = nullptr;
 bool g_widescreenProjectionHookInstalled = false;
 
 void LogMessage(const std::string& message);
@@ -445,10 +447,107 @@ void LogDisplayWindow(HWND window, const char* stage)
             stage, outer.left, outer.top, outer.right - outer.left, outer.bottom - outer.top,
             client.right - client.left, client.bottom - client.top,
             GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)));
+        MONITORINFOEXA monitor{};
+        monitor.cbSize = sizeof(monitor);
+        if (GetMonitorInfoA(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor))
+        {
+            DEVMODEA current{};
+            current.dmSize = sizeof(current);
+            const bool hasMode = EnumDisplaySettingsA(monitor.szDevice, ENUM_CURRENT_SETTINGS, &current) != FALSE;
+            LogMessage(format("FixHighResolution: monitor %s: bounds=%ld,%ld %ldx%ld, current OS mode=%lux%lu @ %luHz (query=%u)",
+                monitor.szDevice, monitor.rcMonitor.left, monitor.rcMonitor.top,
+                monitor.rcMonitor.right - monitor.rcMonitor.left, monitor.rcMonitor.bottom - monitor.rcMonitor.top,
+                current.dmPelsWidth, current.dmPelsHeight, current.dmDisplayFrequency, hasMode ? 1u : 0u));
+        }
+
+        // Optional Win10 APIs: diagnostics must not add a hard OS-version dependency.
+        const auto user32 = GetModuleHandleA("user32.dll");
+        const auto getDpi = reinterpret_cast<UINT(WINAPI*)(HWND)>(GetProcAddress(user32, "GetDpiForWindow"));
+        const auto getContext = reinterpret_cast<HANDLE(WINAPI*)(HWND)>(GetProcAddress(user32, "GetWindowDpiAwarenessContext"));
+        const auto getAwareness = reinterpret_cast<int(WINAPI*)(HANDLE)>(GetProcAddress(user32, "GetAwarenessFromDpiAwarenessContext"));
+        LogMessage(format("FixHighResolution: window DPI=%u, awareness=%d, style=0x%08X, exstyle=0x%08X",
+            getDpi != nullptr ? getDpi(window) : 0,
+            getContext != nullptr && getAwareness != nullptr ? getAwareness(getContext(window)) : -1,
+            static_cast<uint32_t>(GetWindowLongPtrA(window, GWL_STYLE)),
+            static_cast<uint32_t>(GetWindowLongPtrA(window, GWL_EXSTYLE))));
+        DWORD owner = 0;
+        if (GetWindowThreadProcessId(window, &owner) == GetCurrentThreadId())
+        {
+            MINMAXINFO limits{};
+            SendMessageA(window, WM_GETMINMAXINFO, 0, reinterpret_cast<LPARAM>(&limits));
+            LogMessage(format("FixHighResolution: window size limits: maximize=%ldx%ld, tracking=%ldx%ld",
+                limits.ptMaxSize.x, limits.ptMaxSize.y, limits.ptMaxTrackSize.x, limits.ptMaxTrackSize.y));
+        }
     }
     else
     {
         LogMessage(format("FixHighResolution: window %s: geometry unavailable", stage));
+    }
+}
+
+void LogNativeDisplaySurfaces()
+{
+    if (g_ppNativeDisplayContext == nullptr || *g_ppNativeDisplayContext == nullptr)
+    {
+        LogMessage("FixHighResolution: native surface diagnostics unavailable (display-context signature not found)");
+        return;
+    }
+    const auto context = *g_ppNativeDisplayContext;
+    const auto draw = *reinterpret_cast<IDirectDraw4**>(context + 0x48);
+    if (draw != nullptr)
+    {
+        DDSURFACEDESC2 mode{};
+        mode.dwSize = sizeof(mode);
+        const auto result = draw->GetDisplayMode(&mode);
+        LogMessage(format("FixHighResolution: DirectDraw display mode=%lux%lu, bpp=%lu, result=0x%08X",
+            mode.dwWidth, mode.dwHeight, mode.ddpfPixelFormat.dwRGBBitCount, static_cast<uint32_t>(result)));
+    }
+    struct SurfaceEntry { const char* name; size_t offset; };
+    const SurfaceEntry entries[] = { { "primary", 0x30 }, { "back", 0x34 }, { "render target", 0x38 }, { "depth", 0x3C } };
+    for (const auto& entry : entries)
+    {
+        const auto surface = *reinterpret_cast<IDirectDrawSurface4**>(context + entry.offset);
+        if (surface == nullptr)
+        {
+            LogMessage(format("FixHighResolution: %s surface is null", entry.name));
+            continue;
+        }
+        DDSURFACEDESC2 desc{};
+        desc.dwSize = sizeof(desc);
+        const auto result = surface->GetSurfaceDesc(&desc);
+        LogMessage(format("FixHighResolution: %s surface=%lux%lu, pitch=%ld, caps=0x%08X, desc=0x%08X, lost=0x%08X",
+            entry.name, desc.dwWidth, desc.dwHeight, desc.lPitch, desc.ddsCaps.dwCaps,
+            static_cast<uint32_t>(result), static_cast<uint32_t>(surface->IsLost())));
+        if (entry.offset == 0x30)
+        {
+            IDirectDrawClipper* clipper = nullptr;
+            const auto clipperResult = surface->GetClipper(&clipper);
+            LogMessage(format("FixHighResolution: primary clipper query=0x%08X", static_cast<uint32_t>(clipperResult)));
+            if (SUCCEEDED(clipperResult) && clipper != nullptr)
+            {
+                HWND clippedWindow = nullptr;
+                const auto windowResult = clipper->GetHWnd(&clippedWindow);
+                LogMessage(format("FixHighResolution: primary clipper HWND=0x%08X, query=0x%08X",
+                    static_cast<uint32_t>(reinterpret_cast<uintptr_t>(clippedWindow)), static_cast<uint32_t>(windowResult)));
+                if (SUCCEEDED(windowResult) && clippedWindow != nullptr)
+                    LogDisplayWindow(clippedWindow, "primary clipper");
+                DWORD bytes = 0;
+                clipper->GetClipList(nullptr, nullptr, &bytes);
+                if (bytes >= sizeof(RGNDATAHEADER) && bytes <= 1024 * 1024)
+                {
+                    std::vector<uint8_t> data(bytes);
+                    auto region = reinterpret_cast<RGNDATA*>(data.data());
+                    const auto regionResult = clipper->GetClipList(nullptr, region, &bytes);
+                    if (SUCCEEDED(regionResult))
+                    {
+                        const auto& bounds = region->rdh.rcBound;
+                        LogMessage(format("FixHighResolution: primary clip bounds=%ld,%ld %ldx%ld, rectangles=%lu",
+                            bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top, region->rdh.nCount));
+                    }
+                }
+                clipper->Release();
+            }
+        }
     }
 }
 
@@ -522,6 +621,7 @@ int __cdecl InitializeDisplayWithHighResolutionSupport(HWND window, void* drawIn
         if (!HighResolutionWindow::Resize())
             LogMessage("FixHighResolution: unable to apply fullscreen window bounds after setup");
         LogDisplayWindow(window, "after setup");
+        LogNativeDisplaySurfaces();
     }
     return result;
 }
@@ -537,6 +637,10 @@ bool InstallHighResolutionHook()
         return false;
     }
     auto call = display.get_first<uint8_t>(14);
+    // GetDisplayBackBuffer loads the context cell used by initialization.
+    auto backBuffer = hook::pattern("A1 ? ? ? ? 8B 40 34 C3");
+    if (backBuffer.size() == 1)
+        g_ppNativeDisplayContext = *backBuffer.get_first<uint8_t**>(1);
     sub_InitializeDisplay_addr = reinterpret_cast<uintptr_t>(call) + 5 + *reinterpret_cast<int32_t*>(call + 1);
     injector::MakeCALL(call, InitializeDisplayWithHighResolutionSupport);
     return true;
