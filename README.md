@@ -6,6 +6,7 @@ A Windows patch that fixes and enhances Toy Story 2 for the PC. This fork includ
 * Framerate/timing fixes for modern PCs, plus fixes for the disk launcher and fast Zurg/flying enemies at 60 FPS.
 * Widescreen rendering without 3D stretching and texture-mapping fixes.
 * An experimental native Direct3D resolution-limit fix for dimensions above 2048, including 2560x1440 and 3840x2160.
+* Native Direct3D surface/texture recovery for the Alt-Tab black screen while sound and gameplay continue.
 * Configurable level render distance, finite coin/pickup/loaded-object distances and enlarged renderer queues.
 * Configurable portable/no-CD support for a local game installation.
 * Mouse-controlled camera orbit and visor aiming, with left-click fire and right-click visor controls.
@@ -26,6 +27,7 @@ All settings belong to the `[ToyStory2Fix]` section in `scripts\ToyStory2Fix.ini
 | `FixFramerate` | `true` | Adjust game timing for modern systems. |
 | `Allow32Bit` | `true` | Allow 32-bit colour resolutions regardless of the original registry setting. |
 | `FixHighResolution` | `true` | Raise matching native Direct3D surface limits to 8192 per axis (8K) and handle graphics startup failures cleanly. |
+| `FixAltTab` | `true` | Recover lost native display surfaces and textures after switching back to the game. |
 | `IgnoreVRAM` | `true` | Ignore reported VRAM during graphics-device enumeration. |
 | `PortableGame` | `false` | When enabled, bypass the original installation-registry and CD validation for a local game copy. |
 | `SkipSplash` | `true` | Allow immediate copyright/ESRB screen skipping. |
@@ -57,6 +59,12 @@ For those native high-resolution fullscreen modes, the patch also sizes the popu
 This is not unlimited-resolution support: larger dimensions, software renderers and different Windows runtime builds are not guaranteed. Native offscreen tests cover device creation, render-target selection and actual pixels drawn past the old boundary at 2560x1440, 3840x2160, 5120x2880 and 7680x4320, including portrait equivalents. Full in-game testing is still required. Set `FixHighResolution = false` to disable the startup hook and native limit patch.
 
 The widescreen hook also now reads actual viewport dimensions, writes the projection field at byte offset `0x44`, and replaces the complete seven-byte instruction. This avoids an out-of-bounds projection write and a leftover instruction byte that could alter the camera pointer.
+
+### Alt-Tab recovery
+
+`FixAltTab = true` checks for native graphics recovery **before** starting the next render frame. The original game restores some display surfaces only during presentation, a path it can skip when `BeginScene` fails after focus loss. The fix restores the primary/back-buffer chain, render target and depth buffer, reloads lost owned textures from the game's retained pixel data, and refreshes affected device/texture bindings.
+
+Recovery runs only while the game window is foreground and not minimized. If DirectDraw reports lost exclusive ownership, the fix first reapplies that display instance's original successful cooperative settings, preserving its FPU flags, before restoring surfaces. Failed recovery is retried on subsequent focused frames rather than looping indefinitely or restarting gameplay. If the exclusive game mode was lost, only the previously captured DirectDraw mode is reapplied; this does **not** replace the desktop-before-launch high-resolution/DSR workaround above. Graphics wrappers retain their own recovery policy, and unsupported executable signatures are skipped. Set `FixAltTab = false` to disable this feature independently of `FixHighResolution`.
 
 ### Portable / no-CD support
 
@@ -110,7 +118,7 @@ Set `IncreaseObjectRenderDistance = false` to compare with the original object d
 
 ### Log file
 
-`ToyStory2Fix.log` is written alongside the `.asi`/`.ini`. It records display dimensions and initialization results, native resolution-patch status, fullscreen window/client and monitor dimensions, current OS/DirectDraw modes, DPI awareness, native surface dimensions/lost status, mouse-feature activation or signature failures, mouse-look sensitivity/inversion, parsed render-distance values, object-pool installation status and increases in the number of additional rendered actors. Check it to confirm that the intended options are being applied.
+`ToyStory2Fix.log` is written alongside the `.asi`/`.ini`. It records display dimensions and initialization results, native resolution-patch status, fullscreen window/client and monitor dimensions, current OS/DirectDraw modes, DPI awareness, native surface dimensions/lost status, Alt-Tab recovery results, mouse-feature activation or signature failures, mouse-look sensitivity/inversion, parsed render-distance values, object-pool installation status and increases in the number of additional rendered actors. Check it to confirm that the intended options are being applied.
 
 ## Building and testing
 

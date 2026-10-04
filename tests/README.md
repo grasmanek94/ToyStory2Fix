@@ -33,6 +33,14 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /MT tests/native_object_rendering.cpp /Fobui
 
 cl /nologo /std:c++17 /EHsc /W4 /WX /MT tests/scene_render_distance.cpp /Fobuild/tests/scene_render_distance.obj /Febuild/tests/scene_render_distance.exe
 ./build/tests/scene_render_distance.exe
+
+cl /nologo /std:c++17 /EHsc /W4 /WX /MT tests/alt_tab_recovery.cpp /Fobuild/tests/alt_tab_recovery.obj /Febuild/tests/alt_tab_recovery.exe
+./build/tests/alt_tab_recovery.exe
+
+cl /nologo /std:c++latest /EHsc /W3 /WX /MT /Iincludes /Iexternal/hooking /Iexternal/injector/include /Iexternal/inireader tests/alt_tab_hooks.cpp includes/stdafx.cpp external/hooking/Hooking.Patterns.cpp /Fobuild/tests/ /Febuild/tests/alt_tab_hooks.exe /link winmm.lib user32.lib
+./build/tests/alt_tab_hooks.exe
+# Optional read-only executable signature/patch check (use your local game path):
+./build/tests/alt_tab_hooks.exe "C:/Games/Toy Story 2/toy2.exe"
 ```
 
 The tests cover camera-only orbit angles, keyboard camera priority, pitch collision corrections, native fire/visor hold and press-edge behavior, keyboard coexistence, focus loss and refocus, and register replay. The button hook test replaces focus/button APIs with deterministic samples; it does not click or move the desktop cursor.
@@ -44,6 +52,8 @@ The high-resolution hook test verifies viewport-value reads, projection-field/re
 The fullscreen window test creates hidden popup windows with the game's legacy 640x480 sizing limits. It verifies selected-resolution client sizes and maximum-size limits, forwarding of native messages, repeated attachment without recursion, cleanup on destruction, and rejection of non-popup windows. It does not show windows, change focus, or change the desktop resolution.
 
 The native integration test requires Windows with the matching native `d3dim.dll` and a working hardware HAL. It uses hidden offscreen surfaces, checks the 2048/2049 boundary on each axis, then verifies actual rendered pixels at larger dimensions (including 2560x1440, 3840x2160, 5120x2880, 7680x4320 and portrait equivalents), patch idempotency, and the retained 8192/8193 ceiling on both axes. It never changes the desktop resolution or Windows DLL files. A replaced native renderer is reported as skipped; unsupported native versions or driver capabilities can cause this environment-dependent test to fail.
+
+That test also verifies native COM method ownership and focused recovery/rebinding of healthy aliased offscreen surfaces before checking rendered pixels. It does not induce actual OS surface loss or switch the desktop's foreground window.
 
 In-game resolution checks: 640x480, 1920x1080, 1920x1440, 2560x1440, a supported mode with height above 2048, 3840x2160, 5120x2880 and 7680x4320 where the display/DSR configuration supports them; include startup screens, menus, gameplay, visor aiming, FMVs, focus loss and shutdown.
 
@@ -65,3 +75,18 @@ In-game checks are still required:
 2. Sweep between rooms/portals and rotate the camera; no extra objects should draw through native hidden rooms. Verify Buzz, animation, death/respawn and level transitions.
 3. Verify coin collection, pickup prompts, target lock, keyboard/controller movement, left-click fire, right-click visor, mouse orbit and timing are unchanged. Distant unloaded actors are intentionally not activated.
 4. Include menus, loading, cutscenes/FMV, pause, Alt-Tab and shutdown. Keep the established desktop-before-launch setup for high-resolution modes; automatic fullscreen-clipping work remains paused.
+
+## Alt-Tab recovery
+
+See [the recovered display/texture paths](alt_tab_rendering_notes.md) for addresses, layouts and the original recovery gap.
+
+`alt_tab_recovery` uses mock COM vtables to test loss reported by `BeginScene` itself, display restoration order and aliased back buffers, retained-bitmap recreation, borrowed/dynamic texture handling, cached texture invalidation, partial failures, changed devices, wrong-mode recovery, windowed-mode safety, query errors and cyclic-list bounds. It reproduces persistent `DDERR_NOEXCLUSIVEMODE`, verifies reacquisition precedes surface/texture recovery and retains the game's original FPU flags, and rejects missing/mismatched cooperative settings. It verifies no ownership changes, recovery, mode changes or native render-frame starts occur while unfocused, and failed recovery/scene starts do not trigger unbounded retries.
+
+`alt_tab_hooks` tests HRESULT forwarding, null-context paths, wrapper passthrough even when `d3dim.dll` is loaded, and actual method-owner filtering. It also executes the native DirectDraw initialization calling-convention bridge for 512 calls with both FPU policy variants, checking argument forwarding, flags and failed-initialization cleanup. With an executable argument it scans and patches only a private copy of the image, checks relative call targets and all recovered globals, and verifies signature/reference mismatches leave all three hook sites unchanged. It does not launch the game or modify the executable file.
+
+Manual in-game checks (not replaced by the automated tests):
+
+1. With `FixAltTab = true`, switch to another application and back repeatedly from gameplay, the pause menu, visor view, main menus and an FMV. Include both quick switches and a longer period away.
+2. Check the image returns completely: geometry, HUD/menu text, sprites, textures and depth ordering. Confirm sound, controls, pause-menu navigation, held mouse-button suppression and timing are unchanged.
+3. Check ordinary resolution and a supported high-resolution mode, keeping the desktop-before-launch workaround. Check minimized/restored windows and switching back after a level transition.
+4. Confirm the log reports successful recovery or a useful failure stage/error. Compare with `FixAltTab = false` after restarting, and verify replacement graphics wrappers remain unaffected.
