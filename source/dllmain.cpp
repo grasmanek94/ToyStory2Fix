@@ -16,7 +16,7 @@ struct MouseLookSettings
 {
     bool enabled = false;
     bool invertX = false;
-    bool invertY = false;
+    bool invertY = true; // Matches the default in ToyStory2Fix.ini.
     float sensitivity = 4.0f;
     POINT lastCursorPosition{};
     bool hasCursorPosition = false;
@@ -576,7 +576,7 @@ DWORD WINAPI Init(LPVOID bDelay)
     if (iniReader.ReadBoolean(INI_KEY, "MouseLook", true))
     {
         g_mouseLook.invertX = iniReader.ReadBoolean(INI_KEY, "InvertMouseX", false);
-        g_mouseLook.invertY = iniReader.ReadBoolean(INI_KEY, "InvertMouseY", false);
+        g_mouseLook.invertY = iniReader.ReadBoolean(INI_KEY, "InvertMouseY", true);
         g_mouseLook.sensitivity = iniReader.ReadFloat(INI_KEY, "MouseSensitivity", 4.0f);
         if (!std::isfinite(g_mouseLook.sensitivity) || g_mouseLook.sensitivity <= 0.0f)
             g_mouseLook.sensitivity = 4.0f;

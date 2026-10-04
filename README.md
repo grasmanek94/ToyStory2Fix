@@ -23,7 +23,7 @@ Mouse look is enabled by default. It uses relative cursor movement while the gam
 In normal gameplay, the mouse orbits the camera without rotating Buzz, in both active and passive camera modes. Keyboard camera controls take priority; the camera-recenter action releases the mouse-selected angles. Visor mouse aiming still changes Buzz's aim direction so shots remain aligned with the camera.
 
 - `MouseSensitivity` controls camera movement in game-angle units per mouse pixel (default `4.0`; valid range `0.1`–`32.0`).
-- `InvertMouseX` and `InvertMouseY` invert their respective axes.
+- `InvertMouseX` and `InvertMouseY` invert their respective axes (defaults: X = `false`, Y = `true`).
 - Set `MouseLook = false` to disable the feature.
 
 ## Mouse buttons
