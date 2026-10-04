@@ -1,16 +1,90 @@
 #include "stdafx.h"
 #include "MouseLookCamera.h"
 #include "MouseButtonActions.h"
+#include "NativeD3DResolution.h"
+#include "HighResolutionWindow.h"
+#include "NativeObjectRendering.h"
+#include "SceneRenderDistance.h"
 #include <MMSystem.h>
+#include <ddraw.h>
 #include <algorithm>
 #include <cmath>
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
+#include <vector>
 
 uintptr_t sub_490860_addr;
 uintptr_t sub_49D910_addr;
 uintptr_t sub_UpdateCameraController_addr;
+uintptr_t sub_InitializeDisplay_addr;
+uint8_t** g_ppNativeDisplayContext = nullptr;
+bool g_widescreenProjectionHookInstalled = false;
+ObjectDrawDistance::RenderOverlay g_objectRenderOverlay;
+size_t g_largestExtraActorCount = 0;
+
+void LogMessage(const std::string& message);
+
+bool IsLoadedActorVisibleForRendering(const ObjectDrawDistance::Actor& actor)
+{
+    // Ghidra: world +0x274 is the model-pointer table, +0x278 its allocated length.
+    const auto world = *reinterpret_cast<const uint8_t**>(0x00B62410);
+    if (world == nullptr)
+        return false;
+    const auto count = *reinterpret_cast<const uint32_t*>(world + 0x278);
+    const auto models = *reinterpret_cast<const uint8_t* const* const*>(world + 0x274);
+    // Native model metadata has 128 pointers; its first short gates visibility.
+    // A loaded mesh alone does not mean that an actor should be rendered.
+    const auto metadata = reinterpret_cast<const uint8_t* const*>(0x00547CD4);
+    if (!ObjectDrawDistance::HasRenderableModel(actor, models, count, metadata))
+        return false;
+    const auto room = actor.Read<int8_t>(0x6C);
+    const auto roomVisible = reinterpret_cast<int(__cdecl*)(uint32_t)>(0x004BC160);
+    if (room < 0 || roomVisible(static_cast<uint32_t>(room)) == 0)
+        return false; // Keep native room/portal visibility, not "draw through walls".
+    const float position[] = {
+        static_cast<float>(actor.Read<int32_t>(0)) / 32.0f,
+        static_cast<float>(actor.Read<int32_t>(4)) / 32.0f,
+        static_cast<float>(actor.Read<int32_t>(8)) / 32.0f
+    };
+    const auto sphereVisibility = reinterpret_cast<uint32_t(__cdecl*)(const float*, float)>(0x004BA1F0);
+    return (sphereVisibility(position, static_cast<float>(actor.Read<int16_t>(0x3E))) & 0x55555555) == 0;
+}
+
+void __cdecl RenderGameplayWithExtendedObjectDistance(int renderObjects)
+{
+    const auto render = reinterpret_cast<void(__cdecl*)(int)>(0x00440F70);
+    if (renderObjects == 0 || NativeObjectRendering::arenaMemory == nullptr || g_objectRenderOverlay.active)
+    {
+        render(renderObjects);
+        return;
+    }
+    auto& list = NativeObjectRendering::RenderList();
+    // Arm cleanup before Begin/logging: even an allocation/formatting exception
+    // must not let render-only visibility escape into gameplay updates.
+    struct RestoreOverlay
+    {
+        ~RestoreOverlay() { g_objectRenderOverlay.End(NativeObjectRendering::RenderList()); }
+    } restore;
+    const auto before = std::find(list.begin(), list.end(), nullptr) - list.begin();
+    const bool overlay = g_objectRenderOverlay.Begin(list,
+        reinterpret_cast<ObjectDrawDistance::Actor*>(0x0052C840),
+        reinterpret_cast<ObjectDrawDistance::Actor*>(0x0052F300),
+        reinterpret_cast<const int32_t*>(0x0052ADC0), NativeObjectRendering::drawDistance,
+        IsLoadedActorVisibleForRendering);
+    if (overlay)
+    {
+        const auto after = std::find(list.begin(), list.end(), nullptr) - list.begin();
+        const auto extra = static_cast<size_t>(after - before);
+        if (extra > g_largestExtraActorCount)
+        {
+            g_largestExtraActorCount = extra;
+            LogMessage(format("IncreaseObjectRenderDistance: rendering %u additional loaded actors; native gameplay list unchanged",
+                static_cast<unsigned>(extra)));
+        }
+    }
+    render(renderObjects);
+}
 
 struct MouseLookSettings
 {
@@ -63,6 +137,27 @@ struct Variables
     bool* isDemoMode;
 } Variables;
 
+void UpdateWidescreenDimensions(const uint32_t* viewportDimensions)
+{
+    Variables.nWidth = viewportDimensions[0];
+    Variables.nHeight = viewportDimensions[1];
+    Variables.fAspectRatio = (Variables.nWidth != 0 && Variables.nHeight != 0)
+        ? static_cast<float>(Variables.nWidth) / static_cast<float>(Variables.nHeight)
+        : 4.0f / 3.0f;
+    Variables.fScaleValue = 1.0f / Variables.fAspectRatio;
+    Variables.f2DScaleValue = (4.0f / 3.0f) / Variables.fAspectRatio;
+}
+
+struct WidescreenProjectionHook
+{
+    void operator()(injector::reg_pack& regs)
+    {
+        // Original MOV [EAX+44],0.75 uses a byte offset, not 0x44 float elements.
+        auto aspect = reinterpret_cast<float*>(regs.eax + 0x44);
+        *aspect = Variables.fScaleValue;
+    }
+};
+
 void UpdateElapsedMicroseconds() {
     QueryPerformanceCounter(&CurrentTime);
     ElapsedMicroseconds.QuadPart = CurrentTime.QuadPart - PreviousTime.QuadPart;
@@ -108,22 +203,25 @@ int sub_49D910() {
 
     /* Set width and height */
     auto pattern = hook::pattern("8B 15 ? ? ? ? 89 4C 24 08 89 44 24 0C"); //4B5672
-    Variables.nWidth = *(int*)pattern.get_first(2);
-    Variables.nHeight = *((int*)pattern.get_first(2) + 4);
-    Variables.fAspectRatio = float(Variables.nWidth) / float(Variables.nHeight);
-    Variables.fScaleValue = 1.0f / Variables.fAspectRatio;
-    Variables.f2DScaleValue = (4.0f / 3.0f) / Variables.fAspectRatio;
+    // The instruction operand is the address of viewport width; read its contents.
+    UpdateWidescreenDimensions(*pattern.get_first<uint32_t*>(2));
 
     /* Fix 3D stretch */
-    pattern = hook::pattern("C7 40 44 00 00 40 3F"); //4CE80F
-    struct Widescreen3DHook
+    if (!g_widescreenProjectionHookInstalled)
     {
-        void operator()(injector::reg_pack& regs)
+        pattern = hook::pattern("C7 40 44 00 00 40 3F"); //4CE08F
+        if (pattern.size() == 1)
         {
-            float* ptrScaleValue = (float*)regs.eax + 0x44;
-            *ptrScaleValue = Variables.fScaleValue;
+            // Replace the entire seven-byte instruction; leaving its final 0x3F byte
+            // behind would execute AAS and corrupt the camera-object pointer in EAX.
+            injector::MakeInline<WidescreenProjectionHook>(pattern.get_first(0), pattern.get_first(7));
+            g_widescreenProjectionHookInstalled = true;
         }
-    }; injector::MakeInline<Widescreen3DHook>(pattern.get_first(0), pattern.get_first(6));
+        else
+        {
+            LogMessage("Widescreen: projection hook skipped (signature does not match uniquely)");
+        }
+    }
 
 
     return _sub_49D910();
@@ -405,6 +503,214 @@ void LogMessage(const std::string& message)
     }
 }
 
+void LogDisplayWindow(HWND window, const char* stage)
+{
+    RECT outer{}, client{};
+    if (GetWindowRect(window, &outer) && GetClientRect(window, &client))
+    {
+        LogMessage(format("FixHighResolution: window %s: outer=%ld,%ld %ldx%ld, client=%ldx%ld, desktop=%dx%d",
+            stage, outer.left, outer.top, outer.right - outer.left, outer.bottom - outer.top,
+            client.right - client.left, client.bottom - client.top,
+            GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)));
+        MONITORINFOEXA monitor{};
+        monitor.cbSize = sizeof(monitor);
+        if (GetMonitorInfoA(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor))
+        {
+            DEVMODEA current{};
+            current.dmSize = sizeof(current);
+            const bool hasMode = EnumDisplaySettingsA(monitor.szDevice, ENUM_CURRENT_SETTINGS, &current) != FALSE;
+            LogMessage(format("FixHighResolution: monitor %s: bounds=%ld,%ld %ldx%ld, current OS mode=%lux%lu @ %luHz (query=%u)",
+                monitor.szDevice, monitor.rcMonitor.left, monitor.rcMonitor.top,
+                monitor.rcMonitor.right - monitor.rcMonitor.left, monitor.rcMonitor.bottom - monitor.rcMonitor.top,
+                current.dmPelsWidth, current.dmPelsHeight, current.dmDisplayFrequency, hasMode ? 1u : 0u));
+        }
+
+        // Optional Win10 APIs: diagnostics must not add a hard OS-version dependency.
+        const auto user32 = GetModuleHandleA("user32.dll");
+        const auto getDpi = reinterpret_cast<UINT(WINAPI*)(HWND)>(GetProcAddress(user32, "GetDpiForWindow"));
+        const auto getContext = reinterpret_cast<HANDLE(WINAPI*)(HWND)>(GetProcAddress(user32, "GetWindowDpiAwarenessContext"));
+        const auto getAwareness = reinterpret_cast<int(WINAPI*)(HANDLE)>(GetProcAddress(user32, "GetAwarenessFromDpiAwarenessContext"));
+        LogMessage(format("FixHighResolution: window DPI=%u, awareness=%d, style=0x%08X, exstyle=0x%08X",
+            getDpi != nullptr ? getDpi(window) : 0,
+            getContext != nullptr && getAwareness != nullptr ? getAwareness(getContext(window)) : -1,
+            static_cast<uint32_t>(GetWindowLongPtrA(window, GWL_STYLE)),
+            static_cast<uint32_t>(GetWindowLongPtrA(window, GWL_EXSTYLE))));
+        DWORD owner = 0;
+        if (GetWindowThreadProcessId(window, &owner) == GetCurrentThreadId())
+        {
+            MINMAXINFO limits{};
+            SendMessageA(window, WM_GETMINMAXINFO, 0, reinterpret_cast<LPARAM>(&limits));
+            LogMessage(format("FixHighResolution: window size limits: maximize=%ldx%ld, tracking=%ldx%ld",
+                limits.ptMaxSize.x, limits.ptMaxSize.y, limits.ptMaxTrackSize.x, limits.ptMaxTrackSize.y));
+        }
+    }
+    else
+    {
+        LogMessage(format("FixHighResolution: window %s: geometry unavailable", stage));
+    }
+}
+
+void LogNativeDisplaySurfaces()
+{
+    if (g_ppNativeDisplayContext == nullptr || *g_ppNativeDisplayContext == nullptr)
+    {
+        LogMessage("FixHighResolution: native surface diagnostics unavailable (display-context signature not found)");
+        return;
+    }
+    const auto context = *g_ppNativeDisplayContext;
+    const auto draw = *reinterpret_cast<IDirectDraw4**>(context + 0x48);
+    if (draw != nullptr)
+    {
+        DDSURFACEDESC2 mode{};
+        mode.dwSize = sizeof(mode);
+        const auto result = draw->GetDisplayMode(&mode);
+        LogMessage(format("FixHighResolution: DirectDraw display mode=%lux%lu, bpp=%lu, result=0x%08X",
+            mode.dwWidth, mode.dwHeight, mode.ddpfPixelFormat.dwRGBBitCount, static_cast<uint32_t>(result)));
+    }
+    struct SurfaceEntry { const char* name; size_t offset; };
+    const SurfaceEntry entries[] = { { "primary", 0x30 }, { "back", 0x34 }, { "render target", 0x38 }, { "depth", 0x3C } };
+    for (const auto& entry : entries)
+    {
+        const auto surface = *reinterpret_cast<IDirectDrawSurface4**>(context + entry.offset);
+        if (surface == nullptr)
+        {
+            LogMessage(format("FixHighResolution: %s surface is null", entry.name));
+            continue;
+        }
+        DDSURFACEDESC2 desc{};
+        desc.dwSize = sizeof(desc);
+        const auto result = surface->GetSurfaceDesc(&desc);
+        LogMessage(format("FixHighResolution: %s surface=%lux%lu, pitch=%ld, caps=0x%08X, desc=0x%08X, lost=0x%08X",
+            entry.name, desc.dwWidth, desc.dwHeight, desc.lPitch, desc.ddsCaps.dwCaps,
+            static_cast<uint32_t>(result), static_cast<uint32_t>(surface->IsLost())));
+        if (entry.offset == 0x30)
+        {
+            IDirectDrawClipper* clipper = nullptr;
+            const auto clipperResult = surface->GetClipper(&clipper);
+            LogMessage(format("FixHighResolution: primary clipper query=0x%08X", static_cast<uint32_t>(clipperResult)));
+            if (SUCCEEDED(clipperResult) && clipper != nullptr)
+            {
+                HWND clippedWindow = nullptr;
+                const auto windowResult = clipper->GetHWnd(&clippedWindow);
+                LogMessage(format("FixHighResolution: primary clipper HWND=0x%08X, query=0x%08X",
+                    static_cast<uint32_t>(reinterpret_cast<uintptr_t>(clippedWindow)), static_cast<uint32_t>(windowResult)));
+                if (SUCCEEDED(windowResult) && clippedWindow != nullptr)
+                    LogDisplayWindow(clippedWindow, "primary clipper");
+                DWORD bytes = 0;
+                clipper->GetClipList(nullptr, nullptr, &bytes);
+                if (bytes >= sizeof(RGNDATAHEADER) && bytes <= 1024 * 1024)
+                {
+                    std::vector<uint8_t> data(bytes);
+                    auto region = reinterpret_cast<RGNDATA*>(data.data());
+                    const auto regionResult = clipper->GetClipList(nullptr, region, &bytes);
+                    if (SUCCEEDED(regionResult))
+                    {
+                        const auto& bounds = region->rdh.rcBound;
+                        LogMessage(format("FixHighResolution: primary clip bounds=%ld,%ld %ldx%ld, rectangles=%lu",
+                            bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top, region->rdh.nCount));
+                    }
+                }
+                clipper->Release();
+            }
+        }
+    }
+}
+
+int __cdecl InitializeDisplayWithHighResolutionSupport(HWND window, void* drawInfo,
+    const GUID* deviceInfo, const DDSURFACEDESC2* mode, uint32_t flags)
+{
+    const uint32_t width = mode != nullptr ? mode->dwWidth : 0;
+    const uint32_t height = mode != nullptr ? mode->dwHeight : 0;
+    LogMessage(format("FixHighResolution: initializing display %ux%u (flags=0x%X)", width, height, flags));
+    bool adjustFullscreenWindow = false;
+
+    if ((width > NativeD3DResolution::OriginalLimit || height > NativeD3DResolution::OriginalLimit) &&
+        NativeD3DResolution::IsHalDevice(deviceInfo))
+    {
+        // Enumeration has already loaded the native runtime, if it is in use. Do not
+        // load/modify a different renderer when a DirectDraw translation wrapper is active.
+        const auto patch = NativeD3DResolution::RaiseLimit(GetModuleHandleA("d3dim.dll"));
+        switch (patch.status)
+        {
+        case NativeD3DResolution::Status::Applied:
+        case NativeD3DResolution::Status::AlreadyApplied:
+            LogMessage(format("FixHighResolution: native D3DIM surface limit=%u (process memory only)",
+                NativeD3DResolution::RaisedLimit));
+            // Ghidra: CreateDisplayContext flag 1 selects native fullscreen; do not
+            // resize windowed modes, software renderers, or replacement graphics wrappers.
+            adjustFullscreenWindow = (flags & 1) != 0 && width <= NativeD3DResolution::RaisedLimit &&
+                height <= NativeD3DResolution::RaisedLimit;
+            break;
+        case NativeD3DResolution::Status::ModuleMissing:
+            LogMessage("FixHighResolution: native D3DIM not loaded; leaving the graphics wrapper unchanged");
+            break;
+        case NativeD3DResolution::Status::SignatureMismatch:
+            LogMessage(format("FixHighResolution: native patch skipped (create matches=%u, target matches=%u)",
+                static_cast<unsigned>(patch.createMatches), static_cast<unsigned>(patch.targetMatches)));
+            break;
+        case NativeD3DResolution::Status::ProtectionFailed:
+            LogMessage("FixHighResolution: native patch skipped (memory protection change failed)");
+            break;
+        }
+    }
+
+    bool windowAttached = false;
+    if (adjustFullscreenWindow)
+    {
+        LogDisplayWindow(window, "before setup");
+        windowAttached = HighResolutionWindow::Attach(window, width, height);
+        if (!windowAttached || !HighResolutionWindow::Resize())
+            LogMessage("FixHighResolution: unable to apply fullscreen window bounds before setup");
+        LogDisplayWindow(window, "before DirectDraw");
+    }
+
+    const auto initialize = reinterpret_cast<int(__cdecl*)(HWND, void*, const GUID*, const DDSURFACEDESC2*, uint32_t)>(
+        sub_InitializeDisplay_addr);
+    const int result = initialize(window, drawInfo, deviceInfo, mode, flags);
+    LogMessage(format("FixHighResolution: display initialization result=0x%08X", static_cast<uint32_t>(result)));
+    if (result < 0)
+    {
+        // The original caller continues into renderer initialization after this failure,
+        // using a display context whose graphics resources were released. Stop cleanly.
+        const auto message = format(
+            "Unable to initialize Toy Story 2 graphics at %ux%u (error 0x%08X).\n\n"
+            "Try a lower resolution. The native high-resolution fix supports dimensions up to %u "
+            "on matching Windows runtimes; graphics-driver limits still apply.\n\n"
+            "See ToyStory2Fix.log for details.", width, height, static_cast<uint32_t>(result),
+            NativeD3DResolution::RaisedLimit);
+        MessageBoxA(window, message.c_str(), "ToyStory2Fix: graphics initialization failed", MB_OK | MB_ICONERROR);
+        ExitProcess(1);
+    }
+    if (windowAttached)
+    {
+        if (!HighResolutionWindow::Resize())
+            LogMessage("FixHighResolution: unable to apply fullscreen window bounds after setup");
+        LogDisplayWindow(window, "after setup");
+        LogNativeDisplaySurfaces();
+    }
+    return result;
+}
+
+bool InstallHighResolutionHook()
+{
+    // Ghidra: InitializeGameDisplay -> CreateDisplayContext, before renderer initialization.
+    auto display = hook::pattern("8B 90 44 01 00 00 52 50 8B 44 24 14 50 51 E8 ? ? ? ? 83 C4 14 85 C0 5E 7C ? C7 05 ? ? ? ? 01 00 00 00");
+    const auto count = display.size();
+    if (count != 1)
+    {
+        LogMessage(format("FixHighResolution: disabled (display call pattern matches=%u)", static_cast<unsigned>(count)));
+        return false;
+    }
+    auto call = display.get_first<uint8_t>(14);
+    // GetDisplayBackBuffer loads the context cell used by initialization.
+    auto backBuffer = hook::pattern("A1 ? ? ? ? 8B 40 34 C3");
+    if (backBuffer.size() == 1)
+        g_ppNativeDisplayContext = *backBuffer.get_first<uint8_t**>(1);
+    sub_InitializeDisplay_addr = reinterpret_cast<uintptr_t>(call) + 5 + *reinterpret_cast<int32_t*>(call + 1);
+    injector::MakeCALL(call, InitializeDisplayWithHighResolutionSupport);
+    return true;
+}
+
 bool InstallMouseButtonHook()
 {
     // Ghidra: UpdateRawInputActions copies previous input, polls DirectInput, then stores CX.
@@ -566,6 +872,26 @@ DWORD WINAPI Init(LPVOID bDelay)
     g_logPath = iniReader.GetIniPath();
     g_logPath = g_logPath.substr(0, g_logPath.find_last_of('.')) + ".log";
 
+    if (iniReader.ReadBoolean(INI_KEY, "FixHighResolution", true))
+    {
+        if (InstallHighResolutionHook())
+            LogMessage("FixHighResolution: enabled (experimental native limit fix and safe startup failure handling)");
+    }
+
+    if (iniReader.ReadBoolean(INI_KEY, "IncreaseObjectRenderDistance", true))
+    {
+        const float distance = ObjectDrawDistance::SanitizeDistance(
+            iniReader.ReadFloat(INI_KEY, "ObjectDrawDistance", 65536.0f));
+        const auto status = NativeObjectRendering::Install(GetModuleHandleW(nullptr),
+            static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&RenderGameplayWithExtendedObjectDistance)), distance);
+        if (status == NativeObjectRendering::Status::Applied)
+            LogMessage(format("IncreaseObjectRenderDistance: finite distance=%g; sprite queue=16384, transforms=8192, render entries/triangles=32768; gameplay actor pool remains 64",
+                distance));
+        else
+            LogMessage(format("IncreaseObjectRenderDistance: skipped safely (%s); object distances/pools left unchanged",
+                NativeObjectRendering::StatusName(status)));
+    }
+
     if (iniReader.ReadBoolean(INI_KEY, "MouseButtons", true))
     {
         g_mouseButtons.enabled = InstallMouseButtonHook();
@@ -631,7 +957,7 @@ DWORD WINAPI Init(LPVOID bDelay)
     }
 
     /* Make game portable */
-    if (iniReader.ReadBoolean(INI_KEY, "PortableGame", true)) {
+    if (iniReader.ReadBoolean(INI_KEY, "PortableGame", false)) {
         // Bypass the original installation-registry lookup and CD validation-file check.
         pattern = hook::pattern("81 EC 10 04 00 00");
 
@@ -660,11 +986,18 @@ DWORD WINAPI Init(LPVOID bDelay)
 
         LogMessage(format("IncreaseRenderDistance: ini value \"%s\" parsed to %g", rawValue.c_str(), renderDistanceValue));
 
-        pattern = hook::pattern("D9 44 24 04 D8 4C 24 04 D9 1D"); //4BC410
-
-        float** flt_5088B0_addr = (float**)pattern.get_first(10);
-        **flt_5088B0_addr = renderDistanceValue;    // sqrtf(FLT_MAX)=1.84467e+19 | INFINITY=inf | 1.45e8f is the more similar to game's default value.
-        injector::MakeNOP(pattern.get_first(8), 6);
+        pattern = hook::pattern("D9 44 24 04 D8 4C 24 04 D9 1D ? ? ? ? D9 44 24 08 D8 4C 24 08 D9 1D ? ? ? ? C3"); //4BC410
+        if (pattern.size() == 1)
+        {
+            const auto threshold = *pattern.get_first<float*>(10);
+            *threshold = renderDistanceValue;
+            auto store = SceneRenderDistance::PreserveThresholdStore;
+            injector::WriteMemoryRaw(pattern.get_first(8), store.data(), store.size(), true);
+        }
+        else
+        {
+            LogMessage("IncreaseRenderDistance: skipped safely (distance setter signature does not match uniquely)");
+        }
     }
 
     /* Fix widescreen once game loop begins */

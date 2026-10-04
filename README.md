@@ -5,7 +5,8 @@ A Windows patch that fixes and enhances Toy Story 2 for the PC. This fork includ
 * A fix for the "Unable to enumerate a suitable device" error and support for 32-bit colour resolutions.
 * Framerate/timing fixes for modern PCs, plus fixes for the disk launcher and fast Zurg/flying enemies at 60 FPS.
 * Widescreen rendering without 3D stretching and texture-mapping fixes.
-* Configurable level render distance and an additional, independently configurable enemy render-distance fix.
+* An experimental native Direct3D resolution-limit fix for dimensions above 2048, including 2560x1440 and 3840x2160.
+* Configurable level render distance, finite coin/pickup/loaded-object distances and enlarged renderer queues.
 * Configurable portable/no-CD support for a local game installation.
 * Mouse-controlled camera orbit and visor aiming, with left-click fire and right-click visor controls.
 * Immediate skipping of the copyright and ESRB screens with Space/Jump.
@@ -24,8 +25,9 @@ All settings belong to the `[ToyStory2Fix]` section in `scripts\ToyStory2Fix.ini
 | --- | --- | --- |
 | `FixFramerate` | `true` | Adjust game timing for modern systems. |
 | `Allow32Bit` | `true` | Allow 32-bit colour resolutions regardless of the original registry setting. |
+| `FixHighResolution` | `true` | Raise matching native Direct3D surface limits to 8192 per axis (8K) and handle graphics startup failures cleanly. |
 | `IgnoreVRAM` | `true` | Ignore reported VRAM during graphics-device enumeration. |
-| `PortableGame` | `true` | Bypass the original installation-registry and CD validation for a local game copy. |
+| `PortableGame` | `false` | When enabled, bypass the original installation-registry and CD validation for a local game copy. |
 | `SkipSplash` | `true` | Allow immediate copyright/ESRB screen skipping. |
 | `MouseLook` | `true` | Enable third-person camera orbit and visor mouse aiming. |
 | `MouseSensitivity` | `4.0` | Game-angle units per mouse pixel; range `0.1`–`32.0`. |
@@ -35,10 +37,26 @@ All settings belong to the `[ToyStory2Fix]` section in `scripts\ToyStory2Fix.ini
 | `IncreaseRenderDistance` | `true` | Increase the draw distance of level geometry. |
 | `RenderDistanceValue` | `SQRT_FLT_MAX` | Set the level render-distance threshold; see below. |
 | `IncreaseEnemyRenderDistance` | `true` | Extend enemy draw distance separately from level geometry. |
+| `IncreaseObjectRenderDistance` | `true` | Extend coin/pickup and loaded actor rendering, with enlarged renderer-only pools. |
+| `ObjectDrawDistance` | `65536` | Finite object-rendering radius in renderer world units; range `1024`–`65536`. |
 | `Widescreen` | `true` | Correct the 3D aspect ratio for widescreen resolutions. |
 | `TextureFix` | `true` | Fix texture-mapping bugs. |
 | `DiskFix` | `true` | Fix the broken disk launcher at 60 FPS. |
 | `ZurgFix` | `true` | Fix excessively fast Zurg and other flying enemies at 60 FPS. |
+
+### High-resolution support (experimental)
+
+Some native Windows Direct3D3 runtimes reject render targets wider or taller than 2048 pixels, even when the driver advertises larger texture limits. The game does not safely handle that device-creation failure and continues using an invalid display context with released graphics resources.
+
+`FixHighResolution = true` raises the two recognized native `d3dim.dll` dimension checks to **8192 pixels per axis**, allowing 8K modes such as 7680x4320 and DSR modes such as 5120x2880 to be tested. It only patches larger resolutions selected with the hardware HAL device, and patches the loaded runtime in the game process; **no Windows DLL files are changed**. Original surface/driver validation remains in place. Unknown runtime signatures are left untouched, as are graphics wrappers that replace the native renderer. Any reported graphics-initialization failure produces a useful error message and a controlled exit rather than continuing into the crash path.
+
+For those native high-resolution fullscreen modes, the patch also sizes the popup window before and after DirectDraw setup and overrides the game's legacy 640x480 maximum-size limits with the selected resolution. Other window messages still go through the original handler. Windowed modes, lower resolutions and replacement graphics wrappers are not resized.
+
+**For high-resolution/DSR modes, set the Windows desktop resolution to the intended game resolution before launching `toy2.exe`.** For example, set the desktop to **5120x2880 first**, then launch the game and select **5120x2880**. Changing only the in-game resolution can leave logos, movies, menus and gameplay cropped to the top-left, even when all render buffers have the correct dimensions. The manual desktop-before-launch workaround was confirmed at 5120x2880; automatic correction is not provided. After exiting, restore your normal Windows desktop resolution if desired. Investigation of an automatic clipping fix is currently paused.
+
+This is not unlimited-resolution support: larger dimensions, software renderers and different Windows runtime builds are not guaranteed. Native offscreen tests cover device creation, render-target selection and actual pixels drawn past the old boundary at 2560x1440, 3840x2160, 5120x2880 and 7680x4320, including portrait equivalents. Full in-game testing is still required. Set `FixHighResolution = false` to disable the startup hook and native limit patch.
+
+The widescreen hook also now reads actual viewport dimensions, writes the projection field at byte offset `0x44`, and replaces the complete seven-byte instruction. This avoids an out-of-bounds projection write and a leftover instruction byte that could alter the camera pointer.
 
 ### Portable / no-CD support
 
@@ -70,9 +88,29 @@ Keywords are case-insensitive. `1.45e8f` is the closest match to the original ga
 
 `IncreaseEnemyRenderDistance` is a separate fix for enemies disappearing at a shorter distance. It can be toggled independently and is not controlled by `RenderDistanceValue`.
 
+### Extended object distance (experimental)
+
+`IncreaseObjectRenderDistance = true` uses a **large finite** `ObjectDrawDistance` for coins, pickups and already-loaded actor models. The default is **65536 renderer world units**; finite values are clamped to `1024`–`65536`, and invalid values (including infinity/NaN) use the default. This is a separate radius, not the squared geometry threshold in `RenderDistanceValue`.
+
+To avoid trading disappearing objects for buffer overruns, this option allocates larger renderer-only queues before increasing visibility:
+
+| Renderer capacity | Original | Extended |
+| --- | ---: | ---: |
+| World sprites | 2000 | 16384 |
+| Model transforms | 1000 | 8192 |
+| Render entries | 3000 | 32768 |
+| Sorted triangles | 3000 | 32768 |
+| Actor bone-buffer slots | 32 | 65 (64 loaded actors plus Buzz) |
+
+The extra arena uses approximately **10.3 MiB**. All recovered pool references, reset counters and hook sites are validated together; unknown executables, modified signatures or allocation failure leave this feature's distances and pools unchanged. Compatibility currently covers the analyzed `toy2.exe`, not every regional release.
+
+This is **not unlimited actor activation**: the native 64-slot gameplay actor pool, AI, collision, respawn and close-range pickup/target-lock checks are not extended. Additional actor visibility is applied only during rendering and restored immediately afterward. Native room/portal and frustum hiding remain in place, and an unloaded actor cannot be drawn. Some distant entities can therefore still disappear; expanding gameplay capacity safely requires a separate investigation. More visible geometry can also lower FPS.
+
+Set `IncreaseObjectRenderDistance = false` to compare with the original object distances and renderer capacities on the next launch. The geometry-distance patch also now preserves the native x87 stack pop instead of leaking one floating-point value per distance-setter call.
+
 ### Log file
 
-`ToyStory2Fix.log` is written alongside the `.asi`/`.ini`. It records mouse-feature activation or signature failures, mouse-look sensitivity/inversion, and the parsed render-distance value. Check it to confirm that the intended options are being applied.
+`ToyStory2Fix.log` is written alongside the `.asi`/`.ini`. It records display dimensions and initialization results, native resolution-patch status, fullscreen window/client and monitor dimensions, current OS/DirectDraw modes, DPI awareness, native surface dimensions/lost status, mouse-feature activation or signature failures, mouse-look sensitivity/inversion, parsed render-distance values, object-pool installation status and increases in the number of additional rendered actors. Check it to confirm that the intended options are being applied.
 
 ## Building and testing
 
@@ -86,7 +124,7 @@ msbuild build/ToyStory2Fix.sln /p:Configuration=Release /p:Platform=Win32 /p:Pos
 
 The built patch is `data/scripts/ToyStory2Fix.asi`. Copy it, together with the INI, into the game's `scripts` directory. The game and patch are 32-bit, so use `Win32`, not `x64`. For another supported Visual Studio version, use the corresponding Premake generator.
 
-See [the regression-test instructions](tests/README.md) for camera-angle, button, input-edge and focus tests. In-game testing remains necessary for camera feel, collisions and executable compatibility.
+See [the regression-test instructions](tests/README.md) for input, high-resolution, finite-distance, renderer-pool and native x87 replay tests. In-game testing remains necessary for camera feel, object visibility, collisions and executable compatibility.
 
 ## Credits
 
