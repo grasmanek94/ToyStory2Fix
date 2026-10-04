@@ -27,7 +27,7 @@ All settings belong to the `[ToyStory2Fix]` section in `scripts\ToyStory2Fix.ini
 | `Allow32Bit` | `true` | Allow 32-bit colour resolutions regardless of the original registry setting. |
 | `FixHighResolution` | `true` | Raise matching native Direct3D surface limits to 4096 per axis and handle graphics startup failures cleanly. |
 | `IgnoreVRAM` | `true` | Ignore reported VRAM during graphics-device enumeration. |
-| `PortableGame` | `true` | Bypass the original installation-registry and CD validation for a local game copy. |
+| `PortableGame` | `false` | When enabled, bypass the original installation-registry and CD validation for a local game copy. |
 | `SkipSplash` | `true` | Allow immediate copyright/ESRB screen skipping. |
 | `MouseLook` | `true` | Enable third-person camera orbit and visor mouse aiming. |
 | `MouseSensitivity` | `4.0` | Game-angle units per mouse pixel; range `0.1`–`32.0`. |

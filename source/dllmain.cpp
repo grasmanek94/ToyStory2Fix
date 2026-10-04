@@ -774,7 +774,7 @@ DWORD WINAPI Init(LPVOID bDelay)
     }
 
     /* Make game portable */
-    if (iniReader.ReadBoolean(INI_KEY, "PortableGame", true)) {
+    if (iniReader.ReadBoolean(INI_KEY, "PortableGame", false)) {
         // Bypass the original installation-registry lookup and CD validation-file check.
         pattern = hook::pattern("81 EC 10 04 00 00");
 
