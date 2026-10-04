@@ -1,7 +1,10 @@
 #include "stdafx.h"
 #include "MouseLookCamera.h"
 #include "MouseButtonActions.h"
+#include "NativeD3DResolution.h"
+#include "HighResolutionWindow.h"
 #include <MMSystem.h>
+#include <ddraw.h>
 #include <algorithm>
 #include <cmath>
 #include <cctype>
@@ -11,6 +14,10 @@
 uintptr_t sub_490860_addr;
 uintptr_t sub_49D910_addr;
 uintptr_t sub_UpdateCameraController_addr;
+uintptr_t sub_InitializeDisplay_addr;
+bool g_widescreenProjectionHookInstalled = false;
+
+void LogMessage(const std::string& message);
 
 struct MouseLookSettings
 {
@@ -63,6 +70,27 @@ struct Variables
     bool* isDemoMode;
 } Variables;
 
+void UpdateWidescreenDimensions(const uint32_t* viewportDimensions)
+{
+    Variables.nWidth = viewportDimensions[0];
+    Variables.nHeight = viewportDimensions[1];
+    Variables.fAspectRatio = (Variables.nWidth != 0 && Variables.nHeight != 0)
+        ? static_cast<float>(Variables.nWidth) / static_cast<float>(Variables.nHeight)
+        : 4.0f / 3.0f;
+    Variables.fScaleValue = 1.0f / Variables.fAspectRatio;
+    Variables.f2DScaleValue = (4.0f / 3.0f) / Variables.fAspectRatio;
+}
+
+struct WidescreenProjectionHook
+{
+    void operator()(injector::reg_pack& regs)
+    {
+        // Original MOV [EAX+44],0.75 uses a byte offset, not 0x44 float elements.
+        auto aspect = reinterpret_cast<float*>(regs.eax + 0x44);
+        *aspect = Variables.fScaleValue;
+    }
+};
+
 void UpdateElapsedMicroseconds() {
     QueryPerformanceCounter(&CurrentTime);
     ElapsedMicroseconds.QuadPart = CurrentTime.QuadPart - PreviousTime.QuadPart;
@@ -108,22 +136,25 @@ int sub_49D910() {
 
     /* Set width and height */
     auto pattern = hook::pattern("8B 15 ? ? ? ? 89 4C 24 08 89 44 24 0C"); //4B5672
-    Variables.nWidth = *(int*)pattern.get_first(2);
-    Variables.nHeight = *((int*)pattern.get_first(2) + 4);
-    Variables.fAspectRatio = float(Variables.nWidth) / float(Variables.nHeight);
-    Variables.fScaleValue = 1.0f / Variables.fAspectRatio;
-    Variables.f2DScaleValue = (4.0f / 3.0f) / Variables.fAspectRatio;
+    // The instruction operand is the address of viewport width; read its contents.
+    UpdateWidescreenDimensions(*pattern.get_first<uint32_t*>(2));
 
     /* Fix 3D stretch */
-    pattern = hook::pattern("C7 40 44 00 00 40 3F"); //4CE80F
-    struct Widescreen3DHook
+    if (!g_widescreenProjectionHookInstalled)
     {
-        void operator()(injector::reg_pack& regs)
+        pattern = hook::pattern("C7 40 44 00 00 40 3F"); //4CE08F
+        if (pattern.size() == 1)
         {
-            float* ptrScaleValue = (float*)regs.eax + 0x44;
-            *ptrScaleValue = Variables.fScaleValue;
+            // Replace the entire seven-byte instruction; leaving its final 0x3F byte
+            // behind would execute AAS and corrupt the camera-object pointer in EAX.
+            injector::MakeInline<WidescreenProjectionHook>(pattern.get_first(0), pattern.get_first(7));
+            g_widescreenProjectionHookInstalled = true;
         }
-    }; injector::MakeInline<Widescreen3DHook>(pattern.get_first(0), pattern.get_first(6));
+        else
+        {
+            LogMessage("Widescreen: projection hook skipped (signature does not match uniquely)");
+        }
+    }
 
 
     return _sub_49D910();
@@ -405,6 +436,112 @@ void LogMessage(const std::string& message)
     }
 }
 
+void LogDisplayWindow(HWND window, const char* stage)
+{
+    RECT outer{}, client{};
+    if (GetWindowRect(window, &outer) && GetClientRect(window, &client))
+    {
+        LogMessage(format("FixHighResolution: window %s: outer=%ld,%ld %ldx%ld, client=%ldx%ld, desktop=%dx%d",
+            stage, outer.left, outer.top, outer.right - outer.left, outer.bottom - outer.top,
+            client.right - client.left, client.bottom - client.top,
+            GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)));
+    }
+    else
+    {
+        LogMessage(format("FixHighResolution: window %s: geometry unavailable", stage));
+    }
+}
+
+int __cdecl InitializeDisplayWithHighResolutionSupport(HWND window, void* drawInfo,
+    const GUID* deviceInfo, const DDSURFACEDESC2* mode, uint32_t flags)
+{
+    const uint32_t width = mode != nullptr ? mode->dwWidth : 0;
+    const uint32_t height = mode != nullptr ? mode->dwHeight : 0;
+    LogMessage(format("FixHighResolution: initializing display %ux%u (flags=0x%X)", width, height, flags));
+    bool adjustFullscreenWindow = false;
+
+    if ((width > NativeD3DResolution::OriginalLimit || height > NativeD3DResolution::OriginalLimit) &&
+        NativeD3DResolution::IsHalDevice(deviceInfo))
+    {
+        // Enumeration has already loaded the native runtime, if it is in use. Do not
+        // load/modify a different renderer when a DirectDraw translation wrapper is active.
+        const auto patch = NativeD3DResolution::RaiseLimit(GetModuleHandleA("d3dim.dll"));
+        switch (patch.status)
+        {
+        case NativeD3DResolution::Status::Applied:
+        case NativeD3DResolution::Status::AlreadyApplied:
+            LogMessage(format("FixHighResolution: native D3DIM surface limit=%u (process memory only)",
+                NativeD3DResolution::RaisedLimit));
+            // Ghidra: CreateDisplayContext flag 1 selects native fullscreen; do not
+            // resize windowed modes, software renderers, or replacement graphics wrappers.
+            adjustFullscreenWindow = (flags & 1) != 0 && width <= NativeD3DResolution::RaisedLimit &&
+                height <= NativeD3DResolution::RaisedLimit;
+            break;
+        case NativeD3DResolution::Status::ModuleMissing:
+            LogMessage("FixHighResolution: native D3DIM not loaded; leaving the graphics wrapper unchanged");
+            break;
+        case NativeD3DResolution::Status::SignatureMismatch:
+            LogMessage(format("FixHighResolution: native patch skipped (create matches=%u, target matches=%u)",
+                static_cast<unsigned>(patch.createMatches), static_cast<unsigned>(patch.targetMatches)));
+            break;
+        case NativeD3DResolution::Status::ProtectionFailed:
+            LogMessage("FixHighResolution: native patch skipped (memory protection change failed)");
+            break;
+        }
+    }
+
+    bool windowAttached = false;
+    if (adjustFullscreenWindow)
+    {
+        LogDisplayWindow(window, "before setup");
+        windowAttached = HighResolutionWindow::Attach(window, width, height);
+        if (!windowAttached || !HighResolutionWindow::Resize())
+            LogMessage("FixHighResolution: unable to apply fullscreen window bounds before setup");
+        LogDisplayWindow(window, "before DirectDraw");
+    }
+
+    const auto initialize = reinterpret_cast<int(__cdecl*)(HWND, void*, const GUID*, const DDSURFACEDESC2*, uint32_t)>(
+        sub_InitializeDisplay_addr);
+    const int result = initialize(window, drawInfo, deviceInfo, mode, flags);
+    LogMessage(format("FixHighResolution: display initialization result=0x%08X", static_cast<uint32_t>(result)));
+    if (result < 0)
+    {
+        // The original caller continues into renderer initialization after this failure,
+        // using a display context whose graphics resources were released. Stop cleanly.
+        const auto message = format(
+            "Unable to initialize Toy Story 2 graphics at %ux%u (error 0x%08X).\n\n"
+            "Try a lower resolution. The native high-resolution fix supports dimensions up to %u "
+            "on matching Windows runtimes; graphics-driver limits still apply.\n\n"
+            "See ToyStory2Fix.log for details.", width, height, static_cast<uint32_t>(result),
+            NativeD3DResolution::RaisedLimit);
+        MessageBoxA(window, message.c_str(), "ToyStory2Fix: graphics initialization failed", MB_OK | MB_ICONERROR);
+        ExitProcess(1);
+    }
+    if (windowAttached)
+    {
+        if (!HighResolutionWindow::Resize())
+            LogMessage("FixHighResolution: unable to apply fullscreen window bounds after setup");
+        LogDisplayWindow(window, "after setup");
+    }
+    return result;
+}
+
+bool InstallHighResolutionHook()
+{
+    // Ghidra: InitializeGameDisplay -> CreateDisplayContext, before renderer initialization.
+    auto display = hook::pattern("8B 90 44 01 00 00 52 50 8B 44 24 14 50 51 E8 ? ? ? ? 83 C4 14 85 C0 5E 7C ? C7 05 ? ? ? ? 01 00 00 00");
+    const auto count = display.size();
+    if (count != 1)
+    {
+        LogMessage(format("FixHighResolution: disabled (display call pattern matches=%u)", static_cast<unsigned>(count)));
+        return false;
+    }
+    auto call = display.get_first<uint8_t>(14);
+    sub_InitializeDisplay_addr = reinterpret_cast<uintptr_t>(call) + 5 + *reinterpret_cast<int32_t*>(call + 1);
+    injector::MakeCALL(call, InitializeDisplayWithHighResolutionSupport);
+    return true;
+}
+
 bool InstallMouseButtonHook()
 {
     // Ghidra: UpdateRawInputActions copies previous input, polls DirectInput, then stores CX.
@@ -565,6 +702,12 @@ DWORD WINAPI Init(LPVOID bDelay)
 
     g_logPath = iniReader.GetIniPath();
     g_logPath = g_logPath.substr(0, g_logPath.find_last_of('.')) + ".log";
+
+    if (iniReader.ReadBoolean(INI_KEY, "FixHighResolution", true))
+    {
+        if (InstallHighResolutionHook())
+            LogMessage("FixHighResolution: enabled (experimental native limit fix and safe startup failure handling)");
+    }
 
     if (iniReader.ReadBoolean(INI_KEY, "MouseButtons", true))
     {

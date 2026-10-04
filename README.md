@@ -5,6 +5,7 @@ A Windows patch that fixes and enhances Toy Story 2 for the PC. This fork includ
 * A fix for the "Unable to enumerate a suitable device" error and support for 32-bit colour resolutions.
 * Framerate/timing fixes for modern PCs, plus fixes for the disk launcher and fast Zurg/flying enemies at 60 FPS.
 * Widescreen rendering without 3D stretching and texture-mapping fixes.
+* An experimental native Direct3D resolution-limit fix for dimensions above 2048, including 2560x1440 and 3840x2160.
 * Configurable level render distance and an additional, independently configurable enemy render-distance fix.
 * Configurable portable/no-CD support for a local game installation.
 * Mouse-controlled camera orbit and visor aiming, with left-click fire and right-click visor controls.
@@ -24,6 +25,7 @@ All settings belong to the `[ToyStory2Fix]` section in `scripts\ToyStory2Fix.ini
 | --- | --- | --- |
 | `FixFramerate` | `true` | Adjust game timing for modern systems. |
 | `Allow32Bit` | `true` | Allow 32-bit colour resolutions regardless of the original registry setting. |
+| `FixHighResolution` | `true` | Raise matching native Direct3D surface limits to 4096 per axis and handle graphics startup failures cleanly. |
 | `IgnoreVRAM` | `true` | Ignore reported VRAM during graphics-device enumeration. |
 | `PortableGame` | `true` | Bypass the original installation-registry and CD validation for a local game copy. |
 | `SkipSplash` | `true` | Allow immediate copyright/ESRB screen skipping. |
@@ -39,6 +41,18 @@ All settings belong to the `[ToyStory2Fix]` section in `scripts\ToyStory2Fix.ini
 | `TextureFix` | `true` | Fix texture-mapping bugs. |
 | `DiskFix` | `true` | Fix the broken disk launcher at 60 FPS. |
 | `ZurgFix` | `true` | Fix excessively fast Zurg and other flying enemies at 60 FPS. |
+
+### High-resolution support (experimental)
+
+Some native Windows Direct3D3 runtimes reject render targets wider or taller than 2048 pixels, even when the driver advertises larger texture limits. The game does not safely handle that device-creation failure and continues using an invalid display context with released graphics resources.
+
+`FixHighResolution = true` raises the two recognized native `d3dim.dll` dimension checks to **4096 pixels per axis**, only when a larger resolution is selected with the hardware HAL device. It patches the loaded runtime in the game process; **no Windows DLL files are changed**. Original surface/driver validation remains in place. Unknown runtime signatures are left untouched, as are graphics wrappers that replace the native renderer. Any reported graphics-initialization failure produces a useful error message and a controlled exit rather than continuing into the crash path.
+
+For those native high-resolution fullscreen modes, the patch also sizes the popup window before and after DirectDraw setup and overrides the game's legacy 640x480 maximum-size limits with the selected resolution. Other window messages still go through the original handler. Windowed modes, lower resolutions and replacement graphics wrappers are not resized.
+
+This is not unlimited-resolution support: larger dimensions, software renderers and different Windows runtime builds are not guaranteed. Native offscreen tests verify device creation, render-target selection and actual pixels drawn past the old boundary at 2560x1440 and 3840x2160. Full in-game testing is still required. Set `FixHighResolution = false` to disable the startup hook and native limit patch.
+
+The widescreen hook also now reads actual viewport dimensions, writes the projection field at byte offset `0x44`, and replaces the complete seven-byte instruction. This avoids an out-of-bounds projection write and a leftover instruction byte that could alter the camera pointer.
 
 ### Portable / no-CD support
 
@@ -72,7 +86,7 @@ Keywords are case-insensitive. `1.45e8f` is the closest match to the original ga
 
 ### Log file
 
-`ToyStory2Fix.log` is written alongside the `.asi`/`.ini`. It records mouse-feature activation or signature failures, mouse-look sensitivity/inversion, and the parsed render-distance value. Check it to confirm that the intended options are being applied.
+`ToyStory2Fix.log` is written alongside the `.asi`/`.ini`. It records display dimensions and initialization results, native resolution-patch status, fullscreen window/client dimensions before and after setup, mouse-feature activation or signature failures, mouse-look sensitivity/inversion, and the parsed render-distance value. Check it to confirm that the intended options are being applied.
 
 ## Building and testing
 
@@ -86,7 +100,7 @@ msbuild build/ToyStory2Fix.sln /p:Configuration=Release /p:Platform=Win32 /p:Pos
 
 The built patch is `data/scripts/ToyStory2Fix.asi`. Copy it, together with the INI, into the game's `scripts` directory. The game and patch are 32-bit, so use `Win32`, not `x64`. For another supported Visual Studio version, use the corresponding Premake generator.
 
-See [the regression-test instructions](tests/README.md) for camera-angle, button, input-edge and focus tests. In-game testing remains necessary for camera feel, collisions and executable compatibility.
+See [the regression-test instructions](tests/README.md) for camera-angle, button, input-edge, focus, fullscreen window sizing and native high-resolution rendering tests. In-game testing remains necessary for camera feel, collisions and executable compatibility.
 
 ## Credits
 
