@@ -1,30 +1,99 @@
 # Toy Story 2 Fix
-Toy Story 2 Fix is a program that fixes and enhances Toy Story 2 for the PC. Features include:
-* Fixes the "Unable to Enumerate Device" error.
-* Enables the selection of 32-bit resolutions.
-* Fixes the framerate issues that can occur on modern PCs.
-* Allows the player to immediately skip the ESRB and Copyright screens.
-* Allows the game to be played in widescreen with no 3D stretching.
-* Increases the render distance of levels, with a configurable distance value.
-* Works on every regional release of the game.
 
-# Download
-Get the latest version [from the releases page](https://github.com/Juan-Antonio-Doe/ToyStory2Fix/releases/latest). Extract the ZIP file into the folder you installed Toy Story 2 into.
+A Windows patch that fixes and enhances Toy Story 2 for the PC. This fork includes:
 
-# Configuration
-You can enable or disable any part of the patch by opening the `scripts\ToyStory2Fix.ini` file and setting the options to `true` or `false`.
+* A fix for the "Unable to enumerate a suitable device" error and support for 32-bit colour resolutions.
+* Framerate/timing fixes for modern PCs, plus fixes for the disk launcher and fast Zurg/flying enemies at 60 FPS.
+* Widescreen rendering without 3D stretching and texture-mapping fixes.
+* Configurable level render distance and an additional, independently configurable enemy render-distance fix.
+* Configurable portable/no-CD support for a local game installation.
+* Mouse-controlled camera orbit and visor aiming, with left-click fire and right-click visor controls.
+* Immediate skipping of the copyright and ESRB screens with Space/Jump.
 
-## Render distance value
-When `IncreaseRenderDistance` is enabled, the `RenderDistanceValue` option controls how far the render distance is increased. It accepts:
-* A plain or scientific-notation number, with an optional trailing `f`/`F` (e.g. `1.45e8`, `1.45e8f`, `100`, `100.0f`).
-* The keyword `SQRT_FLT_MAX` (default), the maximum safe distance.
-* The keyword `INFINITY`, which disables distance culling entirely, can cause issues such as some NPCs rendering incorrectly or FPS drops.
+## Download and installation
 
-Keywords are not case sensitive. `1.45e8f` is the value closest to the game's original, unmodified render distance. Invalid, zero, or negative values automatically fall back to a safe default.
+See [this fork's releases](https://github.com/grasmanek94/ToyStory2Fix/releases) for packaged builds. Extract a release into the game folder, preserving its directory structure. Older upstream releases may not include the features added by this fork; build the current source if no packaged release includes them.
 
-## Log file
-A `ToyStory2Fix.log` file is created alongside the `.asi` file, recording runtime information such as the render distance value that was parsed and applied. Use it to confirm your `RenderDistanceValue` setting is being read correctly.
+The patch loads as `scripts\ToyStory2Fix.asi` through an ASI loader. Keep the loader supplied with your distribution, and place `ToyStory2Fix.ini` alongside the `.asi`. Restart the game after replacing the patch or changing its settings.
 
-# Credits
-* [RibShark](https://github.com/RibShark/ToyStory2Fix) — main repository and original developer.
+## Configuration
+
+All settings belong to the `[ToyStory2Fix]` section in `scripts\ToyStory2Fix.ini`. Boolean options accept `true` or `false`; the defaults below also apply when an option is missing.
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `FixFramerate` | `true` | Adjust game timing for modern systems. |
+| `Allow32Bit` | `true` | Allow 32-bit colour resolutions regardless of the original registry setting. |
+| `IgnoreVRAM` | `true` | Ignore reported VRAM during graphics-device enumeration. |
+| `PortableGame` | `true` | Bypass the original installation-registry and CD validation for a local game copy. |
+| `SkipSplash` | `true` | Allow immediate copyright/ESRB screen skipping. |
+| `MouseLook` | `true` | Enable third-person camera orbit and visor mouse aiming. |
+| `MouseSensitivity` | `4.0` | Game-angle units per mouse pixel; range `0.1`–`32.0`. |
+| `InvertMouseX` | `false` | Invert horizontal mouse movement. |
+| `InvertMouseY` | `true` | Invert vertical mouse movement. |
+| `MouseButtons` | `true` | Bind left click to fire and right click to visor view. |
+| `IncreaseRenderDistance` | `true` | Increase the draw distance of level geometry. |
+| `RenderDistanceValue` | `SQRT_FLT_MAX` | Set the level render-distance threshold; see below. |
+| `IncreaseEnemyRenderDistance` | `true` | Extend enemy draw distance separately from level geometry. |
+| `Widescreen` | `true` | Correct the 3D aspect ratio for widescreen resolutions. |
+| `TextureFix` | `true` | Fix texture-mapping bugs. |
+| `DiskFix` | `true` | Fix the broken disk launcher at 60 FPS. |
+| `ZurgFix` | `true` | Fix excessively fast Zurg and other flying enemies at 60 FPS. |
+
+### Portable / no-CD support
+
+`PortableGame = true` skips the original install-path/CD-path registry lookup and the CD validation-file check. Keep all required game data available locally: this option does not supply files that would otherwise be read from the disc. Set it to `false` to restore the original validation.
+
+### Mouse look and buttons
+
+**Mouse support was developed with AI assistance**, including the camera-only orbit correction and the fire/visor button bindings.
+
+In normal gameplay, the mouse orbits the camera without rotating Buzz, in both active and passive camera modes. Keyboard camera controls take priority, and the camera-recenter action releases the mouse-selected angles. Visor mouse aiming changes Buzz's aim direction so shots remain aligned with the camera.
+
+* **Left click/hold:** fire, equivalent to the action bound to Left Ctrl by default, including the game's normal hold/charge behavior.
+* **Right click:** toggle visor view, equivalent to the action bound to Tab by default. Holding the button does not repeatedly toggle the visor.
+* Original keyboard/controller bindings, including Ctrl, Tab and target-lock actions, remain available.
+* Input is sampled only while the game is focused. After focus returns, release any held mouse button before pressing it again; mouse-look sampling also resets across visor transitions.
+* `MouseLook` and `MouseButtons` can be disabled independently. `InvertMouseY` is enabled by default; set it to `false` for the opposite vertical direction.
+
+Mouse sensitivity is clamped to `0.1`–`32.0`; invalid or non-positive values use `4.0`. The mouse hooks use executable-pattern detection and disable the affected mouse feature if its required signatures do not match uniquely, rather than applying an unverified patch. Mouse behavior on other regional executables still needs testing.
+
+### Level and enemy render distance
+
+`IncreaseRenderDistance` controls level geometry. When enabled, `RenderDistanceValue` accepts:
+
+* A plain or scientific-notation number, optionally ending in `f`/`F`, such as `1.45e8`, `1.45e8f` or `100.0f`.
+* `SQRT_FLT_MAX` (default): the recommended maximum threshold, approximately `1.84467e19`.
+* `INFINITY`: disable this distance-culling threshold entirely. This can cause NPC rendering problems or FPS drops.
+
+Keywords are case-insensitive. `1.45e8f` is the closest match to the original game threshold. Invalid values, NaN and non-keyword infinity fall back to `SQRT_FLT_MAX`; zero or negative finite values use `1.45e8f`. Other finite values above `1e15` are clamped to `1e15`; the explicit `SQRT_FLT_MAX` and `INFINITY` keywords are exempt.
+
+`IncreaseEnemyRenderDistance` is a separate fix for enemies disappearing at a shorter distance. It can be toggled independently and is not controlled by `RenderDistanceValue`.
+
+### Log file
+
+`ToyStory2Fix.log` is written alongside the `.asi`/`.ini`. It records mouse-feature activation or signature failures, mouse-look sensitivity/inversion, and the parsed render-distance value. Check it to confirm that the intended options are being applied.
+
+## Building and testing
+
+Use Visual Studio with the C++ desktop workload and a Windows SDK. From a Visual Studio Developer PowerShell, initialize dependencies and generate the solution:
+
+```powershell
+git submodule update --init --recursive
+./premake5.exe vs2026
+msbuild build/ToyStory2Fix.sln /p:Configuration=Release /p:Platform=Win32 /p:PostBuildEventUseInBuild=false
+```
+
+The built patch is `data/scripts/ToyStory2Fix.asi`. Copy it, together with the INI, into the game's `scripts` directory. The game and patch are 32-bit, so use `Win32`, not `x64`. For another supported Visual Studio version, use the corresponding Premake generator.
+
+See [the regression-test instructions](tests/README.md) for camera-angle, button, input-edge and focus tests. In-game testing remains necessary for camera feel, collisions and executable compatibility.
+
+## Credits
+
+* [RibShark](https://github.com/RibShark/ToyStory2Fix) — original project and developer.
 * [AndetSTK](https://github.com/AndetSTK/ToyStory2Fix) — upstream repository.
+* [Juan-Antonio-Doe](https://github.com/Juan-Antonio-Doe/ToyStory2Fix) — upstream fork and render-distance enhancements.
+* [grasmanek94](https://github.com/grasmanek94/ToyStory2Fix) — this fork, portable support and mouse features developed with AI assistance.
+* DavidJ75 — enemy render-distance fix.
+* WinterSnowfall (d7vk) — recommended maximum render-distance threshold.
+* hdc0 — 32-bit colour and graphics-device enumeration fixes.
