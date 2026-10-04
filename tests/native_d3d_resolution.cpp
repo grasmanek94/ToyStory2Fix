@@ -6,6 +6,7 @@
 #include <d3d.h>
 #include <cstdio>
 #include "../source/NativeD3DResolution.h"
+#include "../source/AltTabRecovery.h"
 
 // Native-Windows integration probe: hidden offscreen surfaces only. Never changes
 // the desktop resolution, displays a window, or modifies a DLL file on disk.
@@ -110,6 +111,38 @@ bool CheckSize(IDirectDraw4* dd, IDirect3D3* d3d, DWORD width, DWORD height,
             hr = device->SetRenderTarget(surface, 0);
             passed = passed && SUCCEEDED(hr);
             std::printf(", target=%08lX", static_cast<unsigned long>(hr));
+            // Verify actual COM method ownership and a focused recovery/rebind
+            // with healthy offscreen surfaces. This does not simulate OS surface
+            // loss or Alt-Tab the user's desktop; those remain in-game checks.
+            std::array<uint8_t, 0x50> context{};
+            const auto store = [&](size_t offset, const auto& value)
+            {
+                std::memcpy(context.data() + offset, &value, sizeof(value));
+            };
+            store(0x30, surface);
+            store(0x34, surface);
+            store(0x38, surface);
+            store(0x40, device);
+            store(0x48, dd);
+            passed = passed && AltTabRecovery::UsesNativeModules(context.data(), GetModuleHandleA("d3dim.dll"), GetModuleHandleA("ddraw.dll"));
+            AltTabRecovery::State recovery;
+            const auto begin = [&]() { return device->BeginScene(); };
+            hr = recovery.Begin(context.data(), {}, true, begin);
+            passed = passed && SUCCEEDED(hr);
+            if (SUCCEEDED(hr))
+            {
+                const auto end = device->EndScene();
+                passed = passed && SUCCEEDED(end);
+            }
+            passed = passed && recovery.Begin(context.data(), {}, false, begin) == DDERR_NOEXCLUSIVEMODE;
+            hr = recovery.Begin(context.data(), {}, true, begin);
+            passed = passed && SUCCEEDED(hr) && recovery.lastResult.attempted && recovery.lastResult.surfaces == 0;
+            if (SUCCEEDED(hr))
+            {
+                const auto end = device->EndScene();
+                passed = passed && SUCCEEDED(end);
+            }
+            std::printf(", recovery=%08lX", static_cast<unsigned long>(hr));
             const bool rendered = CheckRendering(d3d, device, surface, width, height);
             passed = passed && rendered;
             device->Release();
