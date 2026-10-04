@@ -8,6 +8,25 @@
 
 uintptr_t sub_490860_addr;
 uintptr_t sub_49D910_addr;
+uintptr_t sub_UpdateCameraController_addr;
+
+struct MouseLookSettings
+{
+    bool enabled = false;
+    bool invertX = false;
+    bool invertY = false;
+    float sensitivity = 4.0f;
+    POINT lastCursorPosition{};
+    bool hasCursorPosition = false;
+    uint32_t lastCameraMode = static_cast<uint32_t>(-1);
+} g_mouseLook;
+
+uint32_t* g_pVisorCameraMode;
+uint8_t* g_pCameraState;
+uint8_t* g_pCameraControlFlags;
+uint16_t* g_pPlayerFacingYaw;
+uint16_t* g_pPlayerDesiredYaw;
+
 TIMECAPS tc;
 LARGE_INTEGER Frequency;
 LARGE_INTEGER PreviousTime, CurrentTime, ElapsedMicroseconds;
@@ -92,6 +111,159 @@ int sub_49D910() {
     return _sub_49D910();
 }
 
+uint16_t AddGameAngle(uint16_t angle, int delta)
+{
+    return static_cast<uint16_t>((static_cast<int>(angle) + delta) & 0x0FFF);
+}
+
+void AddPlayerYaw(int delta)
+{
+    *g_pPlayerFacingYaw = AddGameAngle(*g_pPlayerFacingYaw, delta);
+    *g_pPlayerDesiredYaw = AddGameAngle(*g_pPlayerDesiredYaw, delta);
+}
+
+bool CenterCursorInGameWindow(HWND gameWindow)
+{
+    RECT clientRect{};
+    if (!GetClientRect(gameWindow, &clientRect))
+        return false;
+
+    POINT center{
+        (clientRect.right - clientRect.left) / 2,
+        (clientRect.bottom - clientRect.top) / 2
+    };
+
+    if (!ClientToScreen(gameWindow, &center) || !SetCursorPos(center.x, center.y))
+        return false;
+
+    g_mouseLook.lastCursorPosition = center;
+    g_mouseLook.hasCursorPosition = true;
+    return true;
+}
+
+bool GetMouseLookDelta(int& deltaX, int& deltaY)
+{
+    deltaX = 0;
+    deltaY = 0;
+
+    const HWND gameWindow = GetForegroundWindow();
+    DWORD processId = 0;
+    if (gameWindow == nullptr || GetWindowThreadProcessId(gameWindow, &processId) == 0 ||
+        processId != GetCurrentProcessId())
+    {
+        g_mouseLook.hasCursorPosition = false;
+        return false;
+    }
+
+    POINT currentCursor{};
+    if (!GetCursorPos(&currentCursor))
+    {
+        g_mouseLook.hasCursorPosition = false;
+        return false;
+    }
+
+    if (!g_mouseLook.hasCursorPosition)
+    {
+        g_mouseLook.lastCursorPosition = currentCursor;
+        g_mouseLook.hasCursorPosition = true;
+        CenterCursorInGameWindow(gameWindow);
+        return false;
+    }
+
+    deltaX = currentCursor.x - g_mouseLook.lastCursorPosition.x;
+    deltaY = currentCursor.y - g_mouseLook.lastCursorPosition.y;
+
+    if (!CenterCursorInGameWindow(gameWindow))
+        g_mouseLook.lastCursorPosition = currentCursor;
+
+    return deltaX != 0 || deltaY != 0;
+}
+
+void ApplyMouseLook()
+{
+    if (!g_mouseLook.enabled || g_pVisorCameraMode == nullptr || g_pCameraState == nullptr ||
+        g_pCameraControlFlags == nullptr || g_pPlayerFacingYaw == nullptr ||
+        g_pPlayerDesiredYaw == nullptr)
+    {
+        return;
+    }
+
+    const uint32_t cameraMode = *g_pVisorCameraMode;
+    if (cameraMode != 0 && cameraMode != 4)
+    {
+        // Do not carry a mouse movement across visor transitions or cinematic camera states.
+        g_mouseLook.lastCameraMode = cameraMode;
+        g_mouseLook.hasCursorPosition = false;
+        return;
+    }
+
+    if (cameraMode != g_mouseLook.lastCameraMode)
+    {
+        g_mouseLook.lastCameraMode = cameraMode;
+        g_mouseLook.hasCursorPosition = false;
+    }
+
+    int mouseX = 0;
+    int mouseY = 0;
+    if (!GetMouseLookDelta(mouseX, mouseY))
+        return;
+
+    if (g_mouseLook.invertX)
+        mouseX = -mouseX;
+
+    const int yawDelta = static_cast<int>(std::lround(mouseX * g_mouseLook.sensitivity));
+    const int pitchSign = g_mouseLook.invertY ? 1 : -1;
+    const int pitchDelta = static_cast<int>(std::lround(mouseY * g_mouseLook.sensitivity)) * pitchSign;
+
+    // g_dwVisorCameraMode is set by UpdatePlayerMovementAndAiming when Tab's original
+    // 0x400 action edge is received. Do not alter the input masks; only adjust camera state.
+    switch (cameraMode)
+    {
+    case 0: // Normal third-person camera.
+    {
+        auto thirdPersonYaw = reinterpret_cast<uint16_t*>(g_pCameraState + 0x28);
+        auto thirdPersonPitch = reinterpret_cast<int16_t*>(g_pCameraState + 0x2E);
+
+        if ((*g_pCameraControlFlags & 0x40) != 0)
+        {
+            // Active camera: preserve the game's existing behaviour of turning Buzz as well as the camera.
+            AddPlayerYaw(yawDelta);
+        }
+        else
+        {
+            // Passive camera: turn only the camera heading.
+            *thirdPersonYaw = AddGameAngle(*thirdPersonYaw, yawDelta);
+        }
+
+        *thirdPersonPitch = static_cast<int16_t>(std::clamp(
+            static_cast<int>(*thirdPersonPitch) + pitchDelta, -0x200, 0x300));
+        break;
+    }
+
+    case 4: // Visor/aim camera after the transition state has completed.
+    {
+        auto visorPitch = reinterpret_cast<uint32_t*>(g_pCameraState + 0x0C);
+        int signedPitch = static_cast<int>(*visorPitch & 0x0FFF);
+        if (signedPitch > 0x7FF)
+            signedPitch -= 0x1000;
+
+        AddPlayerYaw(yawDelta);
+        *visorPitch = static_cast<uint32_t>(std::clamp(signedPitch + pitchDelta, -0x338, 0x320)) & 0x0FFF;
+        break;
+    }
+
+    default:
+        // Leave the normal-to-visor transition and all cinematic camera states to the game.
+        break;
+    }
+}
+
+void __cdecl UpdateCameraControllerWithMouseLook()
+{
+    ApplyMouseLook();
+    reinterpret_cast<void(__cdecl*)()>(sub_UpdateCameraController_addr)();
+}
+
 // Simple runtime log, written next to the .asi/.ini as "ToyStory2Fix.log".
 // Truncated on the first write of each session, then appended to for the rest of the run.
 void LogMessage(const std::string& message)
@@ -115,7 +287,7 @@ void LogMessage(const std::string& message)
 // or a raw (non-keyword) infinity.
 const float RENDER_DISTANCE_DEFAULT = sqrtf(FLT_MAX);
 
-// Default game render distance value (closest match to the game's original render distance, 
+// Default game render distance value (closest match to the game's original render distance,
 // per empirical testing on the first level using the ceiling lamp behind the bedroom door).
 constexpr const float RENDER_DISTANCE_MATCHING_GAME = 1.45e8f;
 
@@ -202,6 +374,38 @@ DWORD WINAPI Init(LPVOID bDelay)
 
     g_logPath = iniReader.GetIniPath();
     g_logPath = g_logPath.substr(0, g_logPath.find_last_of('.')) + ".log";
+
+    if (iniReader.ReadBoolean(INI_KEY, "MouseLook", true))
+    {
+        g_mouseLook.enabled = true;
+        g_mouseLook.invertX = iniReader.ReadBoolean(INI_KEY, "InvertMouseX", false);
+        g_mouseLook.invertY = iniReader.ReadBoolean(INI_KEY, "InvertMouseY", false);
+        g_mouseLook.sensitivity = iniReader.ReadFloat(INI_KEY, "MouseSensitivity", 4.0f);
+        if (!std::isfinite(g_mouseLook.sensitivity) || g_mouseLook.sensitivity <= 0.0f)
+            g_mouseLook.sensitivity = 4.0f;
+        g_mouseLook.sensitivity = std::clamp(g_mouseLook.sensitivity, 0.1f, 32.0f);
+
+        // Ghidra: UpdateCameraController. Resolve the state-block base from code;
+        // the remaining offsets are fields used by the normal and visor camera routines.
+        pattern = hook::pattern("A1 ? ? ? ? 68 ? ? ? ? 3B C6 75 ? E8 ? ? ? ? EB ? E8 ? ? ? ? A1 ? ? ? ? 83 C4 04");
+        const uintptr_t visorCameraModeAddress = *pattern.get_first<uintptr_t>(1);
+        const uintptr_t cameraStateAddress = *pattern.get_first<uintptr_t>(6);
+        g_pVisorCameraMode = reinterpret_cast<uint32_t*>(visorCameraModeAddress);
+        g_pCameraState = reinterpret_cast<uint8_t*>(cameraStateAddress);
+        g_pCameraControlFlags = g_pCameraState - 0x2D4;
+        g_pPlayerFacingYaw = reinterpret_cast<uint16_t*>(g_pCameraState - 0x92);
+        g_pPlayerDesiredYaw = reinterpret_cast<uint16_t*>(g_pCameraState - 0x58);
+
+        // Ghidra: UpdateGameplayFrame -> UpdateCameraController call site.
+        pattern = hook::pattern("E8 ? ? ? ? E8 ? ? ? ? 68 ? ? ? ? E8 ? ? ? ? E8 ? ? ? ? 68 ? ? ? ? E8 ? ? ? ?");
+        auto cameraUpdateCall = pattern.get_first(20);
+        sub_UpdateCameraController_addr = reinterpret_cast<uintptr_t>(cameraUpdateCall) + 5 +
+            *reinterpret_cast<int32_t*>(reinterpret_cast<uintptr_t>(cameraUpdateCall) + 1);
+        injector::MakeCALL(cameraUpdateCall, UpdateCameraControllerWithMouseLook);
+
+        LogMessage(format("MouseLook: enabled (sensitivity=%.2f, invertX=%d, invertY=%d)",
+            g_mouseLook.sensitivity, g_mouseLook.invertX, g_mouseLook.invertY));
+    }
 
     if (iniReader.ReadBoolean(INI_KEY, "FixFramerate", true)) {
         timeGetDevCaps(&tc, sizeof(tc));

@@ -3,6 +3,7 @@ Toy Story 2 Fix is a program that fixes and enhances Toy Story 2 for the PC. Fea
 * Fixes the "Unable to Enumerate Device" error.
 * Enables the selection of 32-bit resolutions.
 * Fixes the framerate issues that can occur on modern PCs.
+* Adds configurable mouse look for normal gameplay and visor aiming.
 * Allows the player to immediately skip the ESRB and Copyright screens.
 * Allows the game to be played in widescreen with no 3D stretching.
 * Increases the render distance of levels, with a configurable distance value.
@@ -13,6 +14,14 @@ Get the latest version [from the releases page](https://github.com/Juan-Antonio-
 
 # Configuration
 You can enable or disable any part of the patch by opening the `scripts\ToyStory2Fix.ini` file and setting the options to `true` or `false`.
+
+## Mouse look
+
+Mouse look is enabled by default. It uses relative cursor movement while the game window is focused and leaves the original keyboard/controller action masks untouched, so Tab continues to enter visor/aim mode and target-lock actions continue to work.
+
+- `MouseSensitivity` controls camera movement in game-angle units per mouse pixel (default `4.0`; valid range `0.1`–`32.0`).
+- `InvertMouseX` and `InvertMouseY` invert their respective axes.
+- Set `MouseLook = false` to disable the feature.
 
 ## Render distance value
 When `IncreaseRenderDistance` is enabled, the `RenderDistanceValue` option controls how far the render distance is increased. It accepts:
