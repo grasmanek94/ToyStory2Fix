@@ -4,7 +4,7 @@
 
 The same supported `toy2.exe` as the object-renderer patch: image base `00400000`, image size `00A7F000`, timestamp `381979B4`, SHA-256 `023eb6a9459443b34d24cf685591bfeb3b95e1acf579405f6d8fa4407ccbdaf0`. Installation requires the successful extended-object renderer allocation/manifest first. The scenery manifest validates all 12 hook/guard sites before changing any of its three calls.
 
-The reported location is **Andy's neighbourhood** (`level02`). Its NGN contains two static-instance groups: 374 detailed instances and 214 distant instances. Grass/alpha scenery must be kept in the detailed pass; increasing the shared geometry-radius global alone cannot bypass its independent depth boundary. The exact identity of the reported fog/special effects is not yet verified in gameplay, so this is not a claim that all fog emitters have been fixed.
+The reported location is **Andy's neighbourhood** (`level02`). Its NGN contains two static-instance groups: 374 detailed instances and 214 distant instances. Grass/alpha scenery must be kept in the detailed pass; increasing the shared geometry-radius global alone cannot bypass its independent depth boundary. The user confirmed grass is now visible. The remaining fog effect appears after hitting the soldier with a slam in the mole holes and still disappears; its native rendering/activation path is not yet identified. Further fog investigation is paused until the user's command.
 
 ## Recovered native paths
 
@@ -45,10 +45,12 @@ The live PC sprite producers called from `RenderGameplayScene` consume existing 
 
 On 2026-10-05, all **12 regression suites** and the Win32 Release build passed. The scenery executable replay also passed with `/O2`, including combined object/scenery manifest compatibility. Input, user-confirmed Alt-Tab behavior and the retained native 8192-per-axis limits are preserved by the existing regression coverage; full gameplay/driver coverage remains manual.
 
+The user subsequently confirmed the grass fix works. Implementation commit `866ea05` is pushed to `feature/extended-object-draw-distance`. This confirmation does not establish that the unresolved mole-hole fog effect or every scenery path is fixed.
+
 Pending manual checks:
 
-- Restart with the scenery option on/off, keeping object/geometry options identical. Compare the same camera positions across Andy's neighbourhood: grass, fence-side plants, transparency and the reported fog/effects.
+- Broader scenery checks: restart with the scenery option on/off, keeping object/geometry options identical. Compare fence-side plants, transparency and other camera positions; the reported grass visibility fix is already user-confirmed.
 - Check the former split region for duplicate scenery, depth fighting or abrupt changes; rotate the camera and cross room/portal boundaries.
-- If an effect still disappears, obtain an exact location/screenshot and distinguish scene alpha meshes, atmospheric fog and spawned particles before editing its producer.
+- When the user resumes fog work, reproduce the disappearing effect after slamming the soldier in the mole holes and distinguish scene alpha meshes, atmospheric fog and spawned particles before editing its producer.
 - Confirm pickup/target lock, movement/controller, firing/visor/mouse orbit, timing, pause, death/respawn, level transitions, FMVs and the working Alt-Tab fix remain unchanged.
 - Retain the desktop-before-launch high-resolution setup and 8192-per-axis ceiling; automatic fullscreen clipping work remains paused.
