@@ -234,6 +234,17 @@ DWORD WINAPI Init(LPVOID bDelay)
         injector::WriteMemory<uint8_t>(pattern.get_first(0), '\xEB', true);
     }
 
+    /* Increase enemy render distance - thanks DavidJ75 */
+    if (iniReader.ReadBoolean(INI_KEY, "IncreaseEnemyRenderDistance", true)) {
+        pattern = hook::pattern("03 DA 03 CF 3B D9 7D 6D");
+
+        unsigned char enemyRenderDistanceIncreaseFix[] = { 0x90, 0x90 };
+
+        injector::WriteMemoryRaw(pattern.get_first(6), enemyRenderDistanceIncreaseFix, sizeof(enemyRenderDistanceIncreaseFix), true);
+
+        injector::WriteMemory<uint8_t>(pattern.get_first(0), '\xEB', true);
+    }
+
     /* Allow copyright/ESRB screen to be skipped immediately */
     if (iniReader.ReadBoolean(INI_KEY, "SkipSplash", true)) {
         pattern = hook::pattern("66 8B 3D ? ? ? ? 83 C4 1C"); //438586
@@ -271,7 +282,7 @@ DWORD WINAPI Init(LPVOID bDelay)
     /* Fix texture-mapping bugs */
     if (iniReader.ReadBoolean(INI_KEY, "TextureFix", true)) {
         pattern = hook::pattern("DD 45 F4 5B DD 58 10 A1 ?? ?? ?? ?? C9 C3"); //4DBD3D
-        char textureFix[] = {0x8B, 0xD1,
+        unsigned char textureFix[] = {0x8B, 0xD1,
                              0xC1, 0xE9, 0x02,
                              0x56,
                              0x51,
@@ -303,7 +314,7 @@ DWORD WINAPI Init(LPVOID bDelay)
     /* Fix broken disk launcher at 60 FPS */
     if (iniReader.ReadBoolean(INI_KEY, "DiskFix", true)) {
         pattern = hook::pattern("A1 ?? ?? ?? ?? 0F AF C1 99 F7 7C 24 18"); //411099
-        char diskFix[] = {0xB8, 0x02, 0x00, 0x00, 0x00};
+        unsigned char diskFix[] = {0xB8, 0x02, 0x00, 0x00, 0x00};
         injector::WriteMemoryRaw(pattern.get_first(0), diskFix, sizeof(diskFix), true);
     }
 
@@ -312,14 +323,14 @@ DWORD WINAPI Init(LPVOID bDelay)
         pattern = hook::pattern("DD 45 F4 5B DD 58 10 A1 ?? ?? ?? ?? C9 C3"); //4DBD3D
 
         auto zurgXJump = hook::pattern("C1 FB 04 2B CB 8B 5C 24 24 89 0E"); //407F8E
-        char zurgXFix[] = {0x0F, 0xAF, 0x1D, *zurgXJump.get_first<char>(0x88), *zurgXJump.get_first<char>(0x89), *zurgXJump.get_first<char>(0x8A), *zurgXJump.get_first<char>(0x8B),
+        unsigned char zurgXFix[] = {0x0F, 0xAF, 0x1D, *zurgXJump.get_first<unsigned char>(0x88), *zurgXJump.get_first<unsigned char>(0x89), *zurgXJump.get_first<unsigned char>(0x8A), *zurgXJump.get_first<unsigned char>(0x8B),
                            0xC1, 0xFB, 0x05,
                            0x29, 0xD9,
                            0xC3,
                            0x90};
 
         auto zurgZJump = hook::pattern("C1 FA 04 2B CA 89 4E 08 0F BF 46 0E"); //407FB0
-        char zurgZFix[] = {0x0F, 0xAF, 0x15, *zurgXJump.get_first<char>(0x88), *zurgXJump.get_first<char>(0x89), *zurgXJump.get_first<char>(0x8A), *zurgXJump.get_first<char>(0x8B),
+        unsigned char zurgZFix[] = {0x0F, 0xAF, 0x15, *zurgXJump.get_first<unsigned char>(0x88), *zurgXJump.get_first<unsigned char>(0x89), *zurgXJump.get_first<unsigned char>(0x8A), *zurgXJump.get_first<unsigned char>(0x8B),
                            0xC1, 0xFA, 0x05,
                            0x29, 0xD1,
                            0xC3,

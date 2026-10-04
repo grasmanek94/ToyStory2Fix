@@ -215,9 +215,9 @@ public:
                 return !!compare(config[szKey], "false", false);
             }
         }
-        catch (...) {
-            return bolDefaultValue;
-        }
+        catch (...) {}
+
+        return bolDefaultValue;
     }
 
     char* ReadString(const char* szSection, const char* szKey, const char* szDefaultValue)
