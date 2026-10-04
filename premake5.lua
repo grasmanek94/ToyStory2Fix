@@ -21,7 +21,7 @@ workspace "ToyStory2Fix"
    defines { "rsc_FileDescription=\"\"" }
    defines { "rsc_UpdateUrl=\"https://github.com/RibShark/ToyStory2Fix\"" }
    
-   files { "source/*.cpp" }
+   files { "source/*.cpp", "source/*.h" }
    files { "Resources/*.rc" }
    files { "external/hooking/Hooking.Patterns.h", "external/hooking/Hooking.Patterns.cpp" }
    files { "includes/stdafx.h", "includes/stdafx.cpp" }
