@@ -630,8 +630,9 @@ DWORD WINAPI Init(LPVOID bDelay)
         injector::WriteMemoryRaw(pattern.get_first(6), enemyRenderDistanceIncreaseFix, sizeof(enemyRenderDistanceIncreaseFix), true);
     }
 
-    /* Increase enemy render distance - thanks DavidJ75 */
+    /* Make game portable */
     if (iniReader.ReadBoolean(INI_KEY, "PortableGame", true)) {
+        // Bypass the original installation-registry lookup and CD validation-file check.
         pattern = hook::pattern("81 EC 10 04 00 00");
 
         unsigned char portableGameFix[] = { 0xC3, 0x90, 0x90, 0x90, 0x90, 0x90 };
