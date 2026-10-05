@@ -31,6 +31,19 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /MT tests/native_object_rendering.cpp /Fobui
 # Optional executable integration/replay check (use your local game path):
 ./build/tests/native_object_rendering.exe "C:/Games/Toy Story 2/toy2.exe"
 
+cl /nologo /std:c++17 /EHsc /W4 /WX /MT tests/native_scenery_rendering.cpp /Fobuild/tests/native_scenery_rendering.obj /Febuild/tests/native_scenery_rendering.exe
+./build/tests/native_scenery_rendering.exe
+# Optional native world/grid replay in a private executable copy:
+./build/tests/native_scenery_rendering.exe "C:/Games/Toy Story 2/toy2.exe"
+
+cl /nologo /std:c++17 /EHsc /W4 /WX /MT tests/native_mole_hole_smoke.cpp /Fobuild/tests/native_mole_hole_smoke.obj /Febuild/tests/native_mole_hole_smoke.exe
+./build/tests/native_mole_hole_smoke.exe
+# Optional native emitter replay in a private executable copy:
+./build/tests/native_mole_hole_smoke.exe "C:/Games/Toy Story 2/toy2.exe"
+# Repeat with Release optimization and assertions retained:
+cl /nologo /std:c++17 /O2 /EHsc /W4 /WX /MT tests/native_mole_hole_smoke.cpp /Fobuild/tests/native_mole_hole_smoke_optimized.obj /Febuild/tests/native_mole_hole_smoke_optimized.exe
+./build/tests/native_mole_hole_smoke_optimized.exe "C:/Games/Toy Story 2/toy2.exe"
+
 cl /nologo /std:c++17 /EHsc /W4 /WX /MT tests/scene_render_distance.cpp /Fobuild/tests/scene_render_distance.obj /Febuild/tests/scene_render_distance.exe
 ./build/tests/scene_render_distance.exe
 
@@ -69,12 +82,18 @@ See [the recovered rendering paths and capacity notes](object_rendering_notes.md
 
 `scene_render_distance` replays the recovered native distance setter for 512 calls, with a live caller x87 value, and verifies stack depth, exception flags, the overridden geometry threshold and the original second threshold. Build all native replay tests as **x86**.
 
+`native_scenery_rendering` tests the scoped detailed/distant split, native far-clip cap, overlap/no-shrink behavior, bounded grids, prerequisite rejection, atomic signatures and restoration after recursion/exceptions. Optional executable replay runs the actual native world/grid routines with synthetic instances and mocked rendering consumers: distant corner-cell visibility, hidden/frustum/range rejection, unchanged portal traversal and special flags, and x87 preservation across 512 calls. See [the scenery audit](scenery_rendering_notes.md); pixel-level grass/fog and emitter behavior still require gameplay checks.
+
+`native_mole_hole_smoke` tests finite far-clip-capped ranges, exact native fixed-point cutoff/height, separate 64-slot capacity/exhaustion, native-near passthrough, private RNG, motion/size/color/lifetime, pause/tick bounds, cleared/reset/changed sources, stale level-specific pointer avoidance, texture/queue forwarding and every manifest mismatch. Optional executable replay executes the actual mole-hole emitter loop using the captured near/far positions in private relocated memory: two near native emissions plus one distant visual emission, then three distant visual emissions, unchanged seven-hole cadence and native particle bytes, and 512 calls with a live caller x87 value. Combined object/scenery/effect manifests are checked together. It does not modify the running game or installed files. `/O2` replay also passes. See [the address/evidence audit](../.ai/mole-hole-smoke/README.md); pixels, overlap at the 4096 boundary and transitions remain manual checks.
+
 In-game checks are still required:
 
 1. Compare the same camera positions with `IncreaseObjectRenderDistance = false` and `true`, restarting between changes. Check bedroom coins/lamp/doorway objects, a large outdoor level, enemies and pickups. Confirm the log reports installation rather than a safe skip.
 2. Sweep between rooms/portals and rotate the camera; no extra objects should draw through native hidden rooms. Verify Buzz, animation, death/respawn and level transitions.
 3. Verify coin collection, pickup prompts, target lock, keyboard/controller movement, left-click fire, right-click visor, mouse orbit and timing are unchanged. Distant unloaded actors are intentionally not activated.
 4. Include menus, loading, cutscenes/FMV, pause, Alt-Tab and shutdown. Keep the established desktop-before-launch setup for high-resolution modes; automatic fullscreen-clipping work remains paused.
+5. Compare `IncreaseSceneryRenderDistance = false` and `true` in Andy's neighbourhood while retaining the object option: grass/alpha meshes, the former detailed/distant split and room/portal hiding. Atmospheric fog and particle emitters remain untouched by this scenery option.
+6. Compare `IncreaseEffectRenderDistance = false` and `true` after restarting, retaining the same object/scenery settings. Slam three holes and compare the recorded near/far positions in `.ai/mole-hole-smoke/README.md`; smoke should persist at the far position with the effect option enabled. Check crossing the old 4096 cutoff, uncompleted holes, texture transparency, camera rotation, visor, pause/focus loss, death/respawn, leaving/re-entering the level and the confirmed Alt-Tab fix. Other emitters and gameplay interactions must remain native.
 
 ## Alt-Tab recovery
 
