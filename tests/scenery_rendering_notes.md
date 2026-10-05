@@ -4,7 +4,7 @@
 
 The same supported `toy2.exe` as the object-renderer patch: image base `00400000`, image size `00A7F000`, timestamp `381979B4`, SHA-256 `023eb6a9459443b34d24cf685591bfeb3b95e1acf579405f6d8fa4407ccbdaf0`. Installation requires the successful extended-object renderer allocation/manifest first. The scenery manifest validates all 12 hook/guard sites before changing any of its three calls.
 
-The reported location is **Andy's neighbourhood** (`level02`). Its NGN contains two static-instance groups: 374 detailed instances and 214 distant instances. Grass/alpha scenery must be kept in the detailed pass; increasing the shared geometry-radius global alone cannot bypass its independent depth boundary. The user confirmed grass is now visible. The remaining fog effect appears after hitting the soldier with a slam in the mole holes and still disappears; its native rendering/activation path is not yet identified. Further fog investigation is paused until the user's command.
+The reported location is **Andy's neighbourhood** (`level02`). Its NGN contains two static-instance groups: 374 detailed instances and 214 distant instances. Grass/alpha scenery must be kept in the detailed pass; increasing the shared geometry-radius global alone cannot bypass its independent depth boundary. The user confirmed grass is now visible. Subsequent authorized read-only near/far inspection identified the separate persistent mole-hole smoke as type `0x3A`, emitted by the level script only within 4096 units. Its dedicated visual-only extension and evidence are documented in [the smoke README](../.ai/mole-hole-smoke/README.md). The user subsequently reported it works; broader transition checks remain manual.
 
 ## Recovered native paths
 
@@ -37,7 +37,7 @@ The existing 8192-transform, 32768-entry/triangle and 16384-sprite capacities ar
 
 `BuildDistanceFadeLookup` (`0043E6E0`) uses `0054BEF0` as a range while filling the fixed short table at `00557C20..00559C1E`. Neither the range nor the table is changed. References at `00449990`, `0044AA98`, `0044BD04` and `0044D3C2` are in unrecovered legacy code, not evidence for safely raising the shared value.
 
-The live PC sprite producers called from `RenderGameplayScene` consume existing particle/effect records (`00445980`, `0044F010`, `0044EB90`) rather than that fade table. Their simulation/activation paths are separate: the general particle renderer iterates 64 `0x3C`-byte records, the rising-effect renderer consumes 64 `0x10`-byte records, and the neighbourhood chain renderer consumes eight independently allocated chains. None of these lifetimes, activation flags, collision updates or fixed simulation capacities are changed. Extending world scenery does not synthesize absent particles. Do not rename these paths as "fog" without identifying the visible effect.
+The live PC sprite producers called from `RenderGameplayScene` consume existing particle/effect records (`00445980`, `0044F010`, `0044EB90`) rather than that fade table. Their simulation/activation paths are separate: the general particle renderer iterates 64 `0x3C`-byte records, the rising-effect renderer consumes 64 `0x10`-byte records, and the neighbourhood chain renderer consumes eight independently allocated chains. None of these lifetimes, activation flags, collision updates or fixed simulation capacities are changed by the scenery patch. Extending world scenery does not synthesize absent particles. The separately identified mole-hole smoke extension adds its own bounded visual-only pool; it does not expand these native pools or the fade table.
 
 ## Validation and remaining checks
 
@@ -45,12 +45,12 @@ The live PC sprite producers called from `RenderGameplayScene` consume existing 
 
 On 2026-10-05, all **12 regression suites** and the Win32 Release build passed. The scenery executable replay also passed with `/O2`, including combined object/scenery manifest compatibility. Input, user-confirmed Alt-Tab behavior and the retained native 8192-per-axis limits are preserved by the existing regression coverage; full gameplay/driver coverage remains manual.
 
-The user subsequently confirmed the grass fix works. Implementation commit `866ea05` is pushed to `feature/extended-object-draw-distance`. This confirmation does not establish that the unresolved mole-hole fog effect or every scenery path is fixed.
+The user subsequently confirmed the grass fix works. Implementation commit `866ea05` is pushed to `feature/extended-object-draw-distance`. This confirmation does not establish that the separate mole-hole smoke patch or every scenery path is fixed in gameplay.
 
 Pending manual checks:
 
 - Broader scenery checks: restart with the scenery option on/off, keeping object/geometry options identical. Compare fence-side plants, transparency and other camera positions; the reported grass visibility fix is already user-confirmed.
 - Check the former split region for duplicate scenery, depth fighting or abrupt changes; rotate the camera and cross room/portal boundaries.
-- When the user resumes fog work, reproduce the disappearing effect after slamming the soldier in the mole holes and distinguish scene alpha meshes, atmospheric fog and spawned particles before editing its producer.
+- Include the separate smoke option in broader near/far/boundary and transition checks on a verified test binary; the identified emitter/capacity patch passes native replay and the user reported it works.
 - Confirm pickup/target lock, movement/controller, firing/visor/mouse orbit, timing, pause, death/respawn, level transitions, FMVs and the working Alt-Tab fix remain unchanged.
 - Retain the desktop-before-launch high-resolution setup and 8192-per-axis ceiling; automatic fullscreen clipping work remains paused.

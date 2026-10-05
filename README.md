@@ -42,6 +42,7 @@ All settings belong to the `[ToyStory2Fix]` section in `scripts\ToyStory2Fix.ini
 | `IncreaseObjectRenderDistance` | `true` | Extend coin/pickup and loaded actor rendering, with enlarged renderer-only pools. |
 | `ObjectDrawDistance` | `65536` | Finite object-rendering radius in renderer world units; range `1024`–`65536`. |
 | `IncreaseSceneryRenderDistance` | `true` | Extend detailed scenery/grass within the native far clip; requires the extended object pools. |
+| `IncreaseEffectRenderDistance` | `true` | Extend completed mole-hole smoke with separate visual-only capacity; requires the extended object pools. |
 | `Widescreen` | `true` | Correct the 3D aspect ratio for widescreen resolutions. |
 | `TextureFix` | `true` | Fix texture-mapping bugs. |
 | `DiskFix` | `true` | Fix the broken disk launcher at 60 FPS. |
@@ -121,13 +122,21 @@ Set `IncreaseObjectRenderDistance = false` to compare with the original object d
 
 `IncreaseSceneryRenderDistance = true` extends the separate detailed/distant scenery split toward `ObjectDrawDistance`, capped by the existing projection far clip (normally **48000 units**). The original detailed pass stops at 12000 units at the highest detail setting, even with the geometry-distance option enabled. Both sides of the split move together, preserving the native overlap instead of drawing old distant versions throughout the newly extended detailed range. The bounded spatial-grid search is extended as well; native room/portal traversal, hidden flags, frustum checks and material alpha remain intact.
 
-This requires `IncreaseObjectRenderDistance = true` and successful installation of its expanded renderer pools. The override exists only during world-scenery rendering; the original ranges are restored afterward. It does not change the projection/depth precision, atmospheric fog, particle spawning/lifetimes, AI, collision or the shared fade table. Fog/special effects that are absent because their emitters are not active are **not** activated by this patch. The user confirmed grass is now visible in Andy's neighbourhood; the fog effect after slamming the soldier in the mole holes still disappears and remains unresolved. See [the scenery audit](tests/scenery_rendering_notes.md).
+This requires `IncreaseObjectRenderDistance = true` and successful installation of its expanded renderer pools. The override exists only during world-scenery rendering; the original ranges are restored afterward. It does not change the projection/depth precision, atmospheric fog, particle spawning/lifetimes, AI, collision or the shared fade table. Fog/special effects that are absent because their emitters are not active are **not** activated by this scenery patch. The user confirmed grass is now visible in Andy's neighbourhood. The separate mole-hole smoke option below addresses the identified effect cutoff. See [the scenery audit](tests/scenery_rendering_notes.md).
 
 Set only `IncreaseSceneryRenderDistance = false` and restart to compare scenery while retaining the working extended coins/objects.
 
+### Mole-hole smoke distance (experimental)
+
+`IncreaseEffectRenderDistance = true` extends the persistent smoke from **completed mole holes in Andy's neighbourhood** toward `ObjectDrawDistance`, capped by the unchanged native far clip (normally **48000 units**). Read-only near/far snapshots and native code identified a separate **4096-unit emitter cutoff**, not atmospheric fog or the soldier's brief slam burst.
+
+The patch adds **64 dedicated visual-only smoke slots**. Nearby smoke keeps its original path; additional distant smoke uses the native sprite/blend settings, motion/lifetime rules and emitter cadence, but separate storage and a private random stream. The original 64-slot gameplay particle pool, projectiles, collision, pickup/target-lock rules and shared fade table remain unchanged. Other effects are not extended. Extra smoke is dropped safely if its own pool fills.
+
+This option requires successful expanded-object-pool installation and matching executable signatures. Disable only `IncreaseEffectRenderDistance` and restart for comparison. Native emitter replay, capacity tests, all 13 regression suites and the Release build pass. The user reported that it works; broader transition/driver checks remain manual. See [the address/evidence handoff](.ai/mole-hole-smoke/README.md).
+
 ### Log file
 
-`ToyStory2Fix.log` is written alongside the `.asi`/`.ini`. It records display dimensions and initialization results, native resolution-patch status, fullscreen window/client and monitor dimensions, current OS/DirectDraw modes, DPI awareness, native surface dimensions/lost status, Alt-Tab recovery results, mouse-feature activation or signature failures, mouse-look sensitivity/inversion, parsed render-distance values, object-pool/scenery installation status and increases in the number of additional rendered actors. Check it to confirm that the intended options are being applied.
+`ToyStory2Fix.log` is written alongside the `.asi`/`.ini`. It records display dimensions and initialization results, native resolution-patch status, fullscreen window/client and monitor dimensions, current OS/DirectDraw modes, DPI awareness, native surface dimensions/lost status, Alt-Tab recovery results, mouse-feature activation or signature failures, mouse-look sensitivity/inversion, parsed render-distance values, object-pool/scenery/effect installation status and increases in the number of additional rendered actors. Check it to confirm that the intended options are being applied.
 
 ## Building and testing
 
@@ -142,6 +151,8 @@ msbuild build/ToyStory2Fix.sln /p:Configuration=Release /p:Platform=Win32 /p:Pos
 The built patch is `data/scripts/ToyStory2Fix.asi`. Copy it, together with the INI, into the game's `scripts` directory. The game and patch are 32-bit, so use `Win32`, not `x64`. For another supported Visual Studio version, use the corresponding Premake generator.
 
 See [the regression-test instructions](tests/README.md) for input, high-resolution, finite-distance, renderer-pool and native x87 replay tests. In-game testing remains necessary for camera feel, object visibility, collisions and executable compatibility.
+
+For continuing development or reverse engineering, start with [the AI session-resume documentation](.ai/README.md), including separate Ghidra, rendering, smoke, input, display and build/installation READMEs.
 
 ## Credits
 

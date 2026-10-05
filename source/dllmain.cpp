@@ -5,6 +5,7 @@
 #include "HighResolutionWindow.h"
 #include "NativeObjectRendering.h"
 #include "NativeSceneryRendering.h"
+#include "NativeMoleHoleSmoke.h"
 #include "SceneRenderDistance.h"
 #include "AltTabRecovery.h"
 #include <MMSystem.h>
@@ -1034,6 +1035,16 @@ DWORD WINAPI Init(LPVOID bDelay)
                 NativeObjectRendering::drawDistance));
         else
             LogMessage(format("IncreaseSceneryRenderDistance: skipped safely (%s)", NativeSceneryRendering::StatusName(status)));
+    }
+
+    if (iniReader.ReadBoolean(INI_KEY, "IncreaseEffectRenderDistance", true))
+    {
+        const auto status = NativeMoleHoleSmoke::Install(GetModuleHandleW(nullptr));
+        if (status == NativeMoleHoleSmoke::Status::Applied)
+            LogMessage(format("IncreaseEffectRenderDistance: mole-hole smoke extended toward %g within native far clip; 64 additional visual-only particle slots; native 64-slot gameplay particle pool/RNG unchanged",
+                MoleHoleSmoke::DistanceLimit(NativeObjectRendering::drawDistance, MoleHoleSmoke::MaximumDistance)));
+        else
+            LogMessage(format("IncreaseEffectRenderDistance: skipped safely (%s)", NativeMoleHoleSmoke::StatusName(status)));
     }
 
     if (iniReader.ReadBoolean(INI_KEY, "MouseButtons", true))
